@@ -1,0 +1,94 @@
+name: Build Windows client
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e . pyinstaller
+
+      - name: Test
+        run: python -m unittest discover -s tests -q
+
+      - name: Bump version
+        id: version
+        env:
+          BUMP_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.bump || 'patch' }}
+        run: |
+          $ver = python pack/version.py bump --kind $env:BUMP_KIND
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "Bumped to $ver"
+
+      - name: Build client
+        run: python pack/build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceHide-${{ steps.version.outputs.version }}-win64
+          path: dist/FaceHide-${{ steps.version.outputs.version }}-win64.zip
+          if-no-files-found: error
+
+      - name: Commit version and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION pyproject.toml src/facehide/__init__.py
+          $changed = git diff --cached --name-only
+          if ($changed) {
+            git commit -m "chore: release v$ver [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          }
+          git tag -f "v$ver"
+          git push -f origin "v$ver"
+          $zip = "dist/FaceHide-$ver-win64.zip"
+          $notes = @"
+          FaceHide v$ver
+
+          Windows 客户端自动构建。解压后双击 FaceHide.exe。
+          请把整个文件夹一起拷走，不要只拷 exe。
+
+          Commit: ${{ github.sha }}
+          "@
+          gh release view "v$ver" > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "v$ver" $zip --clobber
+          } else {
+            gh release create "v$ver" $zip --title "FaceHide v$ver" --notes $notes
+          }
