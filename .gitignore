@@ -6,6 +6,7 @@ dist/
 build/
 pack/FaceHide.ico
 pack/facehide.spec
+pack/_inno/
 .pytest_cache/
 .mypy_cache/
 .idea/

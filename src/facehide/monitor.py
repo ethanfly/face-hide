@@ -16,6 +16,13 @@ from facehide.gallery import Gallery, can_trigger
 from facehide.i18n import t
 
 
+@dataclass(frozen=True)
+class SeenFace:
+    name: str
+    score: float
+    hide_enabled: bool
+
+
 @dataclass
 class PreviewFrame:
     rgb: np.ndarray
@@ -30,6 +37,26 @@ class PreviewFrame:
     best_score: float = -1.0
     dev_mode: bool = False
     matched_armed: bool = False
+    seen: list[SeenFace] = field(default_factory=list)
+
+
+def track_seen(
+    active: dict[str, float],
+    present: dict[str, SeenFace],
+    now: float,
+    *,
+    grace: float = 1.5,
+) -> tuple[dict[str, float], list[SeenFace]]:
+    next_active = dict(active)
+    newly: list[SeenFace] = []
+    for name, face in present.items():
+        if name not in next_active:
+            newly.append(face)
+        next_active[name] = now
+    for name, stamp in list(next_active.items()):
+        if name not in present and now - stamp > grace:
+            del next_active[name]
+    return next_active, newly
 
 
 @dataclass
@@ -134,6 +161,16 @@ class MonitorThread(QThread):
                     for hit in hits
                     if hit.match is not None and hit.match.score >= settings.match_threshold
                 ]
+                seen: list[SeenFace] = []
+                for hit in recognized:
+                    assert hit.match is not None
+                    seen.append(
+                        SeenFace(
+                            name=hit.match.person.name,
+                            score=hit.match.score,
+                            hide_enabled=hit.match.person.enabled,
+                        )
+                    )
                 triggerable = [hit for hit in recognized if can_trigger(hit.match, settings.match_threshold)]
                 best_score = max((hit.match.score for hit in hits if hit.match), default=-1.0)
                 if recognized:
@@ -202,6 +239,7 @@ class MonitorThread(QThread):
                         best_score=best_score,
                         dev_mode=settings.dev_mode,
                         matched_armed=bool(triggerable),
+                        seen=seen,
                     )
                 )
         finally:

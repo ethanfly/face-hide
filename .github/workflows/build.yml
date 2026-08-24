@@ -34,8 +34,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Install Python packages
         run: |
           python -m pip install -U pip
           python -m pip install -e . pyinstaller
@@ -52,14 +57,30 @@ jobs:
           echo "version=$ver" >> $env:GITHUB_OUTPUT
           echo "Bumped to $ver"
 
-      - name: Build client
+      - name: Build client and installer
         run: python pack/build.py
 
-      - name: Upload artifact
+      - name: Verify artifacts
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $zip = "dist/FaceHide-$ver-win64.zip"
+          $setup = "dist/FaceHide-$ver-win64-setup.exe"
+          if (-not (Test-Path $zip)) { throw "missing $zip" }
+          if (-not (Test-Path $setup)) { throw "missing $setup" }
+          Get-Item $zip, $setup | Format-Table Name, Length
+
+      - name: Upload zip
         uses: actions/upload-artifact@v4
         with:
-          name: FaceHide-${{ steps.version.outputs.version }}-win64
+          name: FaceHide-${{ steps.version.outputs.version }}-win64-zip
           path: dist/FaceHide-${{ steps.version.outputs.version }}-win64.zip
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceHide-${{ steps.version.outputs.version }}-win64-setup
+          path: dist/FaceHide-${{ steps.version.outputs.version }}-win64-setup.exe
           if-no-files-found: error
 
       - name: Commit version and release
@@ -78,17 +99,25 @@ jobs:
           git tag -f "v$ver"
           git push -f origin "v$ver"
           $zip = "dist/FaceHide-$ver-win64.zip"
+          $setup = "dist/FaceHide-$ver-win64-setup.exe"
           $notes = @"
           FaceHide v$ver
 
-          Windows 客户端自动构建。解压后双击 FaceHide.exe。
-          请把整个文件夹一起拷走，不要只拷 exe。
+          安装程序（推荐）
+          - FaceHide-$ver-win64-setup.exe
+            安装后会在桌面和开始菜单创建「当面隐藏」快捷方式
+
+          便携版
+          - FaceHide-$ver-win64.zip
+            解压整个文件夹后双击 FaceHide.exe，不要只拷 exe
+
+          人脸模型已打进包内。设置和人脸只保存在本机 %LOCALAPPDATA%\FaceHide。
 
           Commit: ${{ github.sha }}
           "@
           gh release view "v$ver" > $null 2>&1
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "v$ver" $zip --clobber
+            gh release upload "v$ver" $setup $zip --clobber
           } else {
-            gh release create "v$ver" $zip --title "FaceHide v$ver" --notes $notes
+            gh release create "v$ver" $setup $zip --title "FaceHide v$ver" --notes $notes
           }

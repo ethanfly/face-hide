@@ -1,16 +1,50 @@
-# 当面隐藏
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="当面隐藏图标">
+</p>
 
-用摄像头盯着镜头。登记过的人脸一出现，就藏起当前娱乐/游戏界面，并打开你指定的工作软件或浏览器。什么软件都没设时，默认显示桌面。
+<h1 align="center">当面隐藏</h1>
 
-人脸特征和照片只存在本机 `%LOCALAPPDATA%\FaceHide`，不上传。
+<p align="center">
+  用摄像头盯着镜头。登记过的人脸一出现，就藏起当前娱乐/游戏界面，并打开你指定的工作软件或浏览器。<br>
+  什么软件都没设时，默认显示桌面。人脸特征和照片只存在本机，不上传。
+</p>
+
+<p align="center">
+  <a href="https://github.com/ethanfly/face-hide/releases/latest"><img src="https://img.shields.io/github/v/release/ethanfly/face-hide?label=Release" alt="Latest release"></a>
+  <a href="https://github.com/ethanfly/face-hide/actions/workflows/build.yml"><img src="https://github.com/ethanfly/face-hide/actions/workflows/build.yml/badge.svg" alt="Build Windows client"></a>
+  <a href="https://github.com/ethanfly/face-hide/releases"><img src="https://img.shields.io/github/downloads/ethanfly/face-hide/total" alt="Downloads"></a>
+</p>
+
+![实时监控](docs/screenshots/monitor.png)
+
+## 下载
+
+从 [Releases](https://github.com/ethanfly/face-hide/releases/latest) 获取 Windows 客户端：
+
+| 文件 | 说明 |
+| --- | --- |
+| `FaceHide-<版本>-win64-setup.exe` | **推荐。** 安装程序，会创建桌面和开始菜单快捷方式 |
+| `FaceHide-<版本>-win64.zip` | 便携版。解压整个文件夹后双击 `FaceHide.exe`，不要只拷 exe |
+
+人脸模型已打进包里，别人首次启动一般不用再联网。设置和人脸库仍只保存在本机 `%LOCALAPPDATA%\FaceHide`。
+
+## 界面
+
+| 人脸库 | 工作软件 |
+| --- | --- |
+| ![人脸库](docs/screenshots/faces.png) | ![工作软件](docs/screenshots/work.png) |
+
+| 娱乐窗口 | 识别设置 |
+| --- | --- |
+| ![娱乐窗口](docs/screenshots/hide.png) | ![识别设置](docs/screenshots/settings.png) |
 
 ## 环境
 
 - Windows 10 / 11
-- Python 3.10+（已在 3.14 上验证）
+- Python 3.10+（已在 3.14 上验证；从源码运行时需要）
 - 摄像头，并在 Windows「设置 → 隐私和安全性 → 相机」里允许桌面应用访问
 
-## 安装
+## 安装（源码）
 
 ```bat
 cd /d E:\workspace\face-hide
@@ -50,7 +84,13 @@ python -m facehide --dev
 python pack\build.py
 ```
 
-或双击 `pack.bat`。产物在 `dist\FaceHide\`，主程序是 `FaceHide.exe`，压缩包是 `dist\FaceHide-<版本>-win64.zip`。把整个文件夹一起拷走即可，不要只拷 exe。已下载的 YuNet / SFace 模型会打进包里，别人首次启动一般不用再联网。
+或双击 `pack.bat`。本机会自动准备 Inno Setup（若尚未安装）。产物：
+
+| 路径 | 说明 |
+| --- | --- |
+| `dist\FaceHide\` | 解压即用的程序目录 |
+| `dist\FaceHide-<版本>-win64.zip` | 便携压缩包 |
+| `dist\FaceHide-<版本>-win64-setup.exe` | 安装程序（桌面快捷方式） |
 
 版本号以仓库根目录 `VERSION` 为准，并同步到 `pyproject.toml` 和 `src/facehide/__init__.py`：
 
@@ -61,12 +101,14 @@ python pack\version.py bump --kind patch
 
 ## GitHub 自动构建
 
-推送到 `main` 后，GitHub Actions 会：
+推送到 `main` 后（提交说明不含 `[skip ci]`），GitHub Actions 会：
 
-1. 跑测试
-2. 把补丁版本 +1，并写回版本文件
-3. 打包 Windows 客户端
-4. 打 `vX.Y.Z` 标签，发布到 [Releases](https://github.com/ethanfly/face-hide/releases)
+1. 安装依赖并跑测试
+2. 把补丁版本 +1，并写回 `VERSION` / `pyproject.toml` / `src/facehide/__init__.py`
+3. 用 PyInstaller 打包 64 位客户端
+4. 用 Inno Setup 生成安装程序（自动创建桌面快捷方式）
+5. 上传 zip 与 `*-setup.exe` 为构建产物
+6. 打 `vX.Y.Z` 标签，发布到 [Releases](https://github.com/ethanfly/face-hide/releases)
 
 手动构建：仓库 Actions → **Build Windows client** → Run workflow，可选 `patch` / `minor` / `major` / `none`（`none` 不升版本，只重打当前号）。版本提交带 `[skip ci]`，不会再次触发构建。
 
@@ -75,7 +117,7 @@ python pack\version.py bump --kind patch
 1. **人脸库**：上传或拍摄正脸照，自动检测人脸并生成特征。一张图里有多张脸时，会按张依次添加：每张可归到已有的人、登记为新人，或跳过。单张脸仍会按阈值自动判断是否同一人。也可以点「标为同一人」手动合并，或点某张缩略图拆出/删除。每个人可单独关掉「启用自动隐藏」：仍会识别，但不会藏窗口。
 2. **工作软件**：指定识别成功后要打开的程序。可快速添加 Edge / Chrome 等，也可以从「当前已打开的软件」列表里选，或浏览 exe。列表为空 → 显示桌面。
 3. **娱乐窗口**：按进程名（如 `steam.exe`）最小化对应窗口。默认也会最小化当前前台窗口，并尝试先退出独占全屏。
-4. **实时监控**：点「开始监控」。关闭或最小化窗口会缩到托盘继续跑，托盘菜单可打开或退出。再启动一次只会唤起已有窗口。
+4. **实时监控**：点「开始监控」。镜头里识别到已登记人脸时写入窗口日志；连续确认后才会藏窗口。关闭或最小化窗口会缩到托盘继续跑，托盘菜单可打开或退出。再启动一次只会唤起已有窗口。
 5. **模拟触发**：不靠人脸，直接走一遍隐藏/打开逻辑，方便调窗口策略。
 
 识别设置里可以改匹配阈值、连续确认帧、冷却时间，以及是否「上传时自动把同一人归到一组」。阈值越高越不容易误切或误归并。侧栏底部可在中文 / English 之间切换，语言会记住。
@@ -85,7 +127,7 @@ python pack\version.py bump --kind patch
 | 条件 | 结果 |
 | --- | --- |
 | 指定人脸连续出现若干帧（且已启用自动隐藏） | 最小化娱乐/前台窗口，再打开或前置工作软件 |
-| 人脸已登记但关闭了自动隐藏 | 预览里仍显示识别结果，不切窗口 |
+| 人脸已登记但关闭了自动隐藏 | 预览和日志仍显示识别结果，不切窗口 |
 | 未配置工作软件 | 显示桌面（Win+M） |
 | 工作软件已在运行 | 恢复并前置，不重复启动 |
 | 冷却时间内再次识别 | 不重复触发 |

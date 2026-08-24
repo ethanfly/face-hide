@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -56,7 +57,7 @@ from facehide.gallery import (
     rank_people,
 )
 from facehide.i18n import current_language, set_language, t
-from facehide.monitor import MonitorThread, PreviewFrame, TriggerEvent
+from facehide.monitor import MonitorThread, PreviewFrame, SeenFace, TriggerEvent, track_seen
 from facehide.ui.icons import (
     COLOR_ACTIVE,
     COLOR_EMPTY,
@@ -523,6 +524,7 @@ class MainWindow(QMainWindow):
         self._tray_toggle: QAction | None = None
         self._tray_quit: QAction | None = None
         self._tray_hint_shown = False
+        self._seen_active: dict[str, float] = {}
         self.setWindowIcon(app_icon())
         self.resize(1180, 760)
         self.setStyleSheet(APP_QSS)
@@ -1352,6 +1354,18 @@ class MainWindow(QMainWindow):
             self.pill_match.setProperty("state", "")
         self.pill_match.style().unpolish(self.pill_match)
         self.pill_match.style().polish(self.pill_match)
+        self._log_seen_faces(frame.seen)
+
+    def _log_seen_faces(self, seen: list[SeenFace]) -> None:
+        present: dict[str, SeenFace] = {}
+        for item in seen:
+            prev = present.get(item.name)
+            if prev is None or item.score > prev.score:
+                present[item.name] = item
+        self._seen_active, newly = track_seen(self._seen_active, present, time.monotonic())
+        for item in newly:
+            key = "log.seen" if item.hide_enabled else "log.seen_off"
+            self._log(t(key, name=item.name, score=item.score))
 
     def _on_triggered(self, event: TriggerEvent) -> None:
         if event.error:

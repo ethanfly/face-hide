@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,9 @@ DIST = ROOT / "dist" / "FaceHide"
 ICON = PACK / "FaceHide.ico"
 ENTRY = PACK / "entry.py"
 SPEC = PACK / "facehide.spec"
+ISS = PACK / "facehide.iss"
+INNO_CACHE = PACK / "_inno"
+INNO_URL = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -183,6 +187,7 @@ def write_readme(dist: Path, version: str) -> None:
 人脸和设置只保存在本机 %LOCALAPPDATA%\\FaceHide。
 
 关闭或最小化会缩到托盘，托盘图标右键可退出。同时只运行一个实例。
+识别到已登记人脸时会写入窗口日志。
 
 可选参数：
   FaceHide.exe --dev        开发模式，命中只演练
@@ -193,6 +198,83 @@ def write_readme(dist: Path, version: str) -> None:
 """
     (dist / "使用说明.txt").write_text(text, encoding="utf-8")
     (dist / "VERSION").write_text(version + "\n", encoding="utf-8")
+
+
+def find_iscc() -> Path | None:
+    which = shutil.which("ISCC") or shutil.which("iscc")
+    if which:
+        return Path(which)
+    roots = [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Inno Setup 6",
+        INNO_CACHE / "app",
+        Path(r"C:\Program Files (x86)\Inno Setup 6"),
+        Path(r"C:\Program Files\Inno Setup 6"),
+        Path(r"C:\Program Files (x86)\Inno Setup 7"),
+        Path(r"C:\Program Files\Inno Setup 7"),
+    ]
+    for root in roots:
+        candidate = root / "ISCC.exe"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def ensure_inno() -> Path:
+    existing = find_iscc()
+    if existing is not None:
+        return existing
+    INNO_CACHE.mkdir(parents=True, exist_ok=True)
+    installer = INNO_CACHE / "innosetup.exe"
+    if not installer.is_file():
+        print("downloading Inno Setup", INNO_URL, flush=True)
+        urllib.request.urlretrieve(INNO_URL, installer)
+    dest = INNO_CACHE / "app"
+    dest.mkdir(parents=True, exist_ok=True)
+    print("installing Inno Setup into", dest, flush=True)
+    subprocess.check_call(
+        [
+            str(installer),
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            "/CURRENTUSER",
+            f"/DIR={dest}",
+        ]
+    )
+    iscc = dest / "ISCC.exe"
+    if not iscc.is_file():
+        found = find_iscc()
+        if found is None:
+            raise SystemExit("Inno Setup ISCC.exe not found after install")
+        return found
+    return iscc
+
+
+def _iss_path(path: Path) -> str:
+    return str(path.resolve()).replace("\\", "/")
+
+
+def write_installer(version: str) -> Path:
+    iscc = ensure_inno()
+    out_dir = ROOT / "dist"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            str(iscc),
+            f"/DMyAppVersion={version}",
+            f"/DDistDir={_iss_path(DIST)}",
+            f"/DIconFile={_iss_path(ICON)}",
+            f"/DOutDir={_iss_path(out_dir)}",
+            str(ISS),
+        ]
+    )
+    setup = out_dir / f"FaceHide-{version}-win64-setup.exe"
+    if not setup.is_file():
+        raise SystemExit(f"未生成安装程序：{setup}")
+    print("setup", setup, setup.stat().st_size)
+    return setup
 
 
 def zip_dist(version: str) -> Path:
@@ -220,6 +302,7 @@ def main() -> int:
     exe = DIST / "FaceHide.exe"
     print("OK", exe, "size", exe.stat().st_size)
     zip_dist(version)
+    write_installer(version)
     return 0
 
 
