@@ -32,6 +32,7 @@ class Settings:
     minimize_other_windows: bool = False
     break_fullscreen: bool = True
     auto_start_monitor: bool = False
+    start_minimized: bool = False
     dev_mode: bool = False
     auto_link_same_person: bool = True
     language: str = "zh"
@@ -79,6 +80,7 @@ def settings_from_dict(data: dict[str, Any]) -> Settings:
         minimize_other_windows=bool(data.get("minimize_other_windows", False)),
         break_fullscreen=bool(data.get("break_fullscreen", True)),
         auto_start_monitor=bool(data.get("auto_start_monitor", False)),
+        start_minimized=bool(data.get("start_minimized", False)),
         dev_mode=bool(data.get("dev_mode", False)),
         auto_link_same_person=bool(data.get("auto_link_same_person", True)),
         language=normalize_language(data.get("language", "zh")),

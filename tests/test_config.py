@@ -55,6 +55,13 @@ class ConfigTests(unittest.TestCase):
             save_settings(Settings(auto_link_same_person=False), path)
             self.assertFalse(load_settings(path).auto_link_same_person)
 
+    def test_start_minimized_defaults_off(self) -> None:
+        self.assertFalse(settings_from_dict({}).start_minimized)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_settings(Settings(start_minimized=True), path)
+            self.assertTrue(load_settings(path).start_minimized)
+
     def test_language_defaults_and_normalizes(self) -> None:
         self.assertEqual(settings_from_dict({}).language, "zh")
         self.assertEqual(settings_from_dict({"language": "en-US"}).language, "en")

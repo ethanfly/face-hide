@@ -25,6 +25,10 @@ QFrame#Sidebar {
     background: #10151e;
     border-right: 1px solid #232b39;
 }
+QLabel#BrandLogo {
+    background: transparent;
+    border: 0;
+}
 QLabel#BrandMark {
     color: #8eb6ff;
     font-size: 11px;
@@ -55,7 +59,7 @@ QPushButton#Nav {
     color: #aeb8c9;
     border: 0;
     border-radius: 10px;
-    padding: 10px 12px;
+    padding: 9px 12px 9px 10px;
     text-align: left;
 }
 QPushButton#Nav:hover {
@@ -66,7 +70,7 @@ QPushButton#Nav:checked {
     background: #1b2c48;
     color: #9ec3ff;
     border-left: 3px solid #6f8cff;
-    padding-left: 9px;
+    padding-left: 7px;
 }
 QPushButton#Lang {
     background: #121826;
@@ -297,12 +301,12 @@ QMenu {
     background: #141a24;
     border: 1px solid #2a3140;
     color: #e8eef8;
-    padding: 6px;
-    border-radius: 10px;
+    padding: 8px;
+    border-radius: 8px;
 }
 QMenu::item {
-    padding: 7px 16px;
-    border-radius: 6px;
+    padding: 8px 14px;
+    border-radius: 4px;
 }
 QMenu::item:selected {
     background: #1b2c48;
@@ -311,6 +315,14 @@ QMenu::separator {
     height: 1px;
     background: #273143;
     margin: 4px 8px;
+}
+QMenu#TrayMenu {
+    border-radius: 0;
+    padding: 4px;
+}
+QMenu#TrayMenu::item {
+    padding: 8px 14px 8px 10px;
+    border-radius: 4px;
 }
 QToolTip {
     background: #141a24;

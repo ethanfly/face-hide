@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QCursor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -57,10 +57,27 @@ from facehide.gallery import (
 )
 from facehide.i18n import current_language, set_language, t
 from facehide.monitor import MonitorThread, PreviewFrame, TriggerEvent
-from facehide.ui.icons import app_icon
+from facehide.ui.icons import (
+    COLOR_ACTIVE,
+    COLOR_EMPTY,
+    COLOR_MUTED,
+    COLOR_ON_PRIMARY,
+    app_icon,
+    app_pixmap,
+    glyph_icon,
+    glyph_pixmap,
+    tray_status,
+)
 from facehide.ui.styles import APP_QSS, apply_dark_surface
 
-NAV_KEYS = ("nav.monitor", "nav.faces", "nav.work", "nav.hide", "nav.settings")
+NAV_ITEMS = (
+    ("nav.monitor", "monitor"),
+    ("nav.faces", "faces"),
+    ("nav.work", "work"),
+    ("nav.hide", "hide"),
+    ("nav.settings", "settings"),
+)
+NAV_KEYS = tuple(key for key, _glyph in NAV_ITEMS)
 SAMPLE_SOURCE_KEYS = {"auto": "sample.auto", "manual": "sample.manual", "enroll": "sample.enroll"}
 
 
@@ -90,6 +107,12 @@ def _thumb_pixmap(path: Path, size: int) -> QPixmap:
 
 def _join_actions(actions: list[str]) -> str:
     return "；".join(actions)
+
+
+def _prepare_dialog(dialog: QDialog) -> None:
+    dialog.setWindowIcon(app_icon())
+    dialog.setStyleSheet(APP_QSS)
+    apply_dark_surface(dialog)
 
 
 def _ok_cancel(dialog: QDialog) -> QDialogButtonBox:
@@ -142,8 +165,7 @@ class ProcessPicker(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("dialog.process_title"))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         self.resize(420, 520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -172,8 +194,7 @@ class OpenAppPicker(QDialog):
     def __init__(self, parent: QWidget | None, apps: list[OpenApp]) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("dialog.open_title"))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         self.resize(560, 560)
         self._apps = apps
         layout = QVBoxLayout(self)
@@ -225,8 +246,7 @@ class SamePersonDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("dialog.same_title"))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
@@ -268,8 +288,7 @@ class MergePersonDialog(QDialog):
     def __init__(self, parent: QWidget, people: list[Person], current_id: str) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("dialog.merge_title"))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         self.resize(420, 360)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -311,8 +330,7 @@ class EnrollFaceDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("dialog.enroll_title", index=index, total=total))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         self.resize(480, 420)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -385,8 +403,7 @@ class CaptureDialog(QDialog):
     def __init__(self, parent: QWidget, monitor: MonitorThread) -> None:
         super().__init__(parent)
         self.setWindowTitle(t("capture.title"))
-        self.setStyleSheet(APP_QSS)
-        apply_dark_surface(self)
+        _prepare_dialog(self)
         self.resize(820, 640)
         self._monitor = monitor
         self._latest_bgr: np.ndarray | None = None
@@ -416,6 +433,8 @@ class CaptureDialog(QDialog):
         self._btn_cancel = QPushButton(t("cancel"))
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_shot = QPushButton(t("capture.shot"), objectName="Primary")
+        self._btn_shot.setIconSize(QSize(16, 16))
+        self._btn_shot.setIcon(glyph_icon("camera", 16, COLOR_ON_PRIMARY))
         self._btn_shot.setEnabled(False)
         self._btn_shot.clicked.connect(self._on_shot)
         row.addWidget(self._btn_cancel)
@@ -497,11 +516,13 @@ class MainWindow(QMainWindow):
         self.engine = engine
         self._armed = False
         self._allow_quit = False
+        self._quitting = False
         self._camera_infos: list[CameraInfo] = []
         self._tray: QSystemTrayIcon | None = None
         self._tray_show: QAction | None = None
         self._tray_toggle: QAction | None = None
         self._tray_quit: QAction | None = None
+        self._tray_hint_shown = False
         self.setWindowIcon(app_icon())
         self.resize(1180, 760)
         self.setStyleSheet(APP_QSS)
@@ -540,6 +561,7 @@ class MainWindow(QMainWindow):
         self._tray_toggle = toggle
         self._tray_quit = quit_action
         self._apply_tray_language()
+        self._refresh_tray_icon()
 
     def _build_sidebar(self) -> QWidget:
         side = QFrame(objectName="Sidebar")
@@ -551,19 +573,34 @@ class MainWindow(QMainWindow):
         self.brand = QLabel(objectName="Brand")
         self.brand_sub = QLabel(objectName="BrandSub")
         self.brand_sub.setWordWrap(True)
-        layout.addWidget(self.brand_mark)
-        layout.addWidget(self.brand)
+        self.brand_logo = QLabel(objectName="BrandLogo")
+        self.brand_logo.setFixedSize(40, 40)
+        self.brand_logo.setPixmap(app_pixmap(40))
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(12)
+        titles = QVBoxLayout()
+        titles.setContentsMargins(0, 0, 0, 0)
+        titles.setSpacing(0)
+        titles.addWidget(self.brand_mark)
+        titles.addWidget(self.brand)
+        brand_row.addWidget(self.brand_logo, 0, Qt.AlignmentFlag.AlignVCenter)
+        brand_row.addLayout(titles, 1)
+        layout.addLayout(brand_row)
         layout.addWidget(self.brand_sub)
         layout.addSpacing(16)
         self.nav_buttons: list[QPushButton] = []
-        for idx, _key in enumerate(NAV_KEYS):
+        for idx, (_key, glyph) in enumerate(NAV_ITEMS):
             btn = QPushButton(objectName="Nav")
             btn.setCheckable(True)
+            btn.setProperty("glyph", glyph)
+            btn.setIconSize(QSize(18, 18))
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.clicked.connect(lambda _=False, i=idx: self._goto(i))
             self.nav_buttons.append(btn)
             layout.addWidget(btn)
         self.nav_buttons[0].setChecked(True)
+        self._refresh_nav_icons()
         layout.addStretch(1)
 
         self.lang_label = QLabel(objectName="Hint")
@@ -593,8 +630,28 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
+        self._refresh_nav_icons()
         if index == 2:
             self._reload_open_apps()
+
+    def _refresh_nav_icons(self) -> None:
+        for btn in self.nav_buttons:
+            glyph = str(btn.property("glyph") or "")
+            color = COLOR_ACTIVE if btn.isChecked() else COLOR_MUTED
+            btn.setIcon(glyph_icon(glyph, 18, color))
+
+    def _sync_monitor_button(self) -> None:
+        if self._armed:
+            self.btn_monitor.setText(t("btn.stop"))
+            self.btn_monitor.setIcon(glyph_icon("stop", 16, COLOR_ON_PRIMARY))
+        else:
+            self.btn_monitor.setText(t("btn.start"))
+            self.btn_monitor.setIcon(glyph_icon("play", 16, COLOR_ON_PRIMARY))
+
+    def _refresh_tray_icon(self) -> None:
+        if self._tray is None:
+            return
+        self._tray.setIcon(app_icon(tray_status(self._armed, self.store.get().dev_mode)))
 
     def _card(self) -> QFrame:
         return QFrame(objectName="Card")
@@ -626,8 +683,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         self.mon_eyebrow, self.mon_title, self.mon_hint, head = self._page_header(layout)
         self.btn_monitor = QPushButton(objectName="Primary")
+        self.btn_monitor.setIconSize(QSize(16, 16))
         self.btn_monitor.clicked.connect(self.toggle_monitor)
         self.btn_trigger = QPushButton()
+        self.btn_trigger.setIconSize(QSize(16, 16))
+        self.btn_trigger.setIcon(glyph_icon("bolt", 16))
         self.btn_trigger.clicked.connect(self.manual_trigger)
         head.addWidget(self.btn_trigger)
         head.addWidget(self.btn_monitor)
@@ -666,8 +726,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         self.faces_eyebrow, self.faces_title, self.faces_hint, head = self._page_header(layout)
         self.btn_upload = QPushButton(objectName="Primary")
+        self.btn_upload.setIconSize(QSize(16, 16))
+        self.btn_upload.setIcon(glyph_icon("upload", 16, COLOR_ON_PRIMARY))
         self.btn_upload.clicked.connect(self.add_person_from_file)
         self.btn_capture = QPushButton()
+        self.btn_capture.setIconSize(QSize(16, 16))
+        self.btn_capture.setIcon(glyph_icon("camera", 16))
         self.btn_capture.clicked.connect(self.add_person_from_camera)
         head.addWidget(self.btn_capture)
         head.addWidget(self.btn_upload)
@@ -831,6 +895,9 @@ class MainWindow(QMainWindow):
         self.chk_autostart = QCheckBox()
         self.chk_autostart.stateChanged.connect(self._save_from_ui)
         form.addWidget(self.chk_autostart)
+        self.chk_start_min = QCheckBox()
+        self.chk_start_min.stateChanged.connect(self._save_from_ui)
+        form.addWidget(self.chk_start_min)
         layout.addWidget(card)
         layout.addStretch(1)
         return page
@@ -862,12 +929,13 @@ class MainWindow(QMainWindow):
         self.btn_lang_en.blockSignals(False)
         for btn, key in zip(self.nav_buttons, NAV_KEYS, strict=True):
             btn.setText(t(key))
+        self._refresh_nav_icons()
 
         self.mon_eyebrow.setText(t("app.eyebrow"))
         self.mon_title.setText(t("monitor.title"))
         self.mon_hint.setText(t("monitor.hint"))
         self.btn_trigger.setText(t("btn.trigger"))
-        self.btn_monitor.setText(t("btn.stop") if self._armed else t("btn.start"))
+        self._sync_monitor_button()
         pixmap = self.preview.pixmap()
         if pixmap is None or pixmap.isNull():
             self.preview.setText(t("preview.opening"))
@@ -910,6 +978,7 @@ class MainWindow(QMainWindow):
         self.set_camera_label.setText(t("settings.camera"))
         self.chk_autolink.setText(t("settings.autolink"))
         self.chk_autostart.setText(t("settings.autostart"))
+        self.chk_start_min.setText(t("settings.start_minimized"))
         self.chk_dev.setText(t("settings.dev"))
 
         self._apply_dev_chrome()
@@ -940,6 +1009,7 @@ class MainWindow(QMainWindow):
         self.confirm.setValue(settings.confirm_frames)
         self.cooldown.setValue(int(settings.cooldown_seconds))
         self.chk_autostart.setChecked(settings.auto_start_monitor)
+        self.chk_start_min.setChecked(settings.start_minimized)
         self.chk_dev.setChecked(settings.dev_mode)
         self.chk_autolink.setChecked(settings.auto_link_same_person)
         self._apply_dev_chrome(settings)
@@ -966,6 +1036,7 @@ class MainWindow(QMainWindow):
         settings.confirm_frames = self.confirm.value()
         settings.cooldown_seconds = float(self.cooldown.value())
         settings.auto_start_monitor = self.chk_autostart.isChecked()
+        settings.start_minimized = self.chk_start_min.isChecked()
         settings.dev_mode = self.chk_dev.isChecked()
         settings.auto_link_same_person = self.chk_autolink.isChecked()
         settings.hide_foreground = self.chk_foreground.isChecked()
@@ -995,6 +1066,7 @@ class MainWindow(QMainWindow):
             self.side_state.setProperty("state", "")
         self.side_state.style().unpolish(self.side_state)
         self.side_state.style().polish(self.side_state)
+        self._refresh_tray_icon()
 
     def _reload_work(self, settings: Settings) -> None:
         self.work_list.clear()
@@ -1059,12 +1131,16 @@ class MainWindow(QMainWindow):
             empty = QFrame(objectName="EmptyFace")
             box = QVBoxLayout(empty)
             box.setContentsMargins(28, 48, 28, 48)
+            icon = QLabel()
+            icon.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            icon.setPixmap(glyph_pixmap("faces", 56, COLOR_EMPTY))
             title = QLabel(t("faces.empty_title"))
             title.setStyleSheet("font-size:16px; font-weight:600; background:transparent;")
             title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             hint = QLabel(t("faces.empty_hint"), objectName="Hint")
             hint.setWordWrap(True)
             hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            box.addWidget(icon)
             box.addWidget(title)
             box.addWidget(hint)
             self.face_grid.addWidget(empty)
@@ -1230,7 +1306,7 @@ class MainWindow(QMainWindow):
         self.monitor.set_protected_hwnds({self.hwnd()})
         self.monitor.set_armed(True)
         self._armed = True
-        self.btn_monitor.setText(t("btn.stop"))
+        self._sync_monitor_button()
         self._apply_dev_chrome()
         if self.store.get().dev_mode:
             self._log(t("log.monitor_start_dev"))
@@ -1240,7 +1316,7 @@ class MainWindow(QMainWindow):
     def stop_monitor(self) -> None:
         self.monitor.set_armed(False)
         self._armed = False
-        self.btn_monitor.setText(t("btn.start"))
+        self._sync_monitor_button()
         self._apply_dev_chrome()
         self._log(t("log.monitor_stop"))
 
@@ -1615,18 +1691,73 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._log(t("log.sim_fail", error=exc))
 
+    def reveal(self) -> None:
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        try:
+            import ctypes
+
+            hwnd = int(self.winId())
+            ctypes.windll.user32.ShowWindow(hwnd, 9)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+    def _hide_to_tray(self, notify: bool = True) -> None:
+        self.hide()
+        if not notify or self._tray is None or not self._tray.isVisible() or self._tray_hint_shown:
+            return
+        self._tray_hint_shown = True
+        self._tray.showMessage(
+            t("app.name"),
+            t("tray.hidden"),
+            QSystemTrayIcon.MessageIcon.Information,
+            2500,
+        )
+
+    def changeEvent(self, event: QEvent) -> None:
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and not self.store.get().dev_mode
+        ):
+            QTimer.singleShot(0, self._hide_to_tray)
+        super().changeEvent(event)
+
     def request_quit(self) -> None:
         self._allow_quit = True
-        self.close()
+        if self._tray is not None:
+            menu = self._tray.contextMenu()
+            if menu is not None:
+                menu.close()
+        QTimer.singleShot(0, self._quit_now)
 
     def shutdown(self) -> None:
         self.monitor.stop()
         self.monitor.wait(1500)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        if self._armed and not self._allow_quit and not self.store.get().dev_mode:
-            event.ignore()
-            self.hide()
+    def _quit_now(self) -> None:
+        if self._quitting:
             return
+        self._quitting = True
+        self._allow_quit = True
         self.shutdown()
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.setContextMenu(None)
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._quitting:
+            event.accept()
+            return
+        if not self._allow_quit and not self.store.get().dev_mode:
+            event.ignore()
+            self._hide_to_tray()
+            return
         event.accept()
+        self._quit_now()

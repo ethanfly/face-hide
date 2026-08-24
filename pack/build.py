@@ -40,40 +40,10 @@ def ensure_pyinstaller() -> None:
 
 
 def write_icon() -> Path:
-    from PIL import Image, ImageDraw
+    from facehide.mark import save_ico
 
-    masters: list[Image.Image] = []
-    for size in (16, 24, 32, 48, 64, 128, 256):
-        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        radius = max(2, int(size * 0.22))
-        draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=(47, 111, 237, 255))
-        draw.rounded_rectangle(
-            (int(size * 0.18), int(size * 0.20), int(size * 0.82), int(size * 0.62)),
-            radius=max(1, size // 16),
-            fill=(16, 19, 26, 255),
-        )
-        draw.ellipse(
-            (int(size * 0.36), int(size * 0.28), int(size * 0.64), int(size * 0.56)),
-            fill=(126, 182, 255, 255),
-        )
-        draw.ellipse(
-            (int(size * 0.44), int(size * 0.36), int(size * 0.56), int(size * 0.48)),
-            fill=(16, 19, 26, 255),
-        )
-        draw.polygon(
-            [
-                (int(size * 0.22), int(size * 0.78)),
-                (int(size * 0.32), int(size * 0.70)),
-                (int(size * 0.80), int(size * 0.22)),
-                (int(size * 0.70), int(size * 0.30)),
-            ],
-            fill=(255, 139, 123, 255),
-        )
-        masters.append(img)
     ICON.parent.mkdir(parents=True, exist_ok=True)
-    masters[-1].save(ICON, format="ICO", sizes=[(image.width, image.height) for image in masters])
-    return ICON
+    return save_ico(ICON)
 
 
 def local_models() -> list[Path]:
@@ -150,6 +120,7 @@ hiddenimports += [
     "facehide.ui.main_window",
     "facehide.ui.styles",
     "facehide.ui.icons",
+    "facehide.mark",
 ]
 
 a = Analysis(
@@ -211,9 +182,12 @@ def write_readme(dist: Path, version: str) -> None:
 首次启动会准备人脸模型（已随包附带则无需联网）。
 人脸和设置只保存在本机 %LOCALAPPDATA%\\FaceHide。
 
+关闭或最小化会缩到托盘，托盘图标右键可退出。同时只运行一个实例。
+
 可选参数：
-  FaceHide.exe --dev     开发模式，命中只演练
-  FaceHide.exe --check   自检摄像头和模型
+  FaceHide.exe --dev        开发模式，命中只演练
+  FaceHide.exe --minimized  启动后最小化到托盘
+  FaceHide.exe --check      自检摄像头和模型
 
 请把整个 FaceHide 文件夹一起拷贝，不要只拷 exe。
 """

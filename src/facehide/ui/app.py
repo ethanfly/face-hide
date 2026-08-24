@@ -5,7 +5,6 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction
-from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -19,12 +18,11 @@ from facehide.config import SettingsStore
 from facehide.engine import FaceEngine
 from facehide.gallery import Gallery
 from facehide.i18n import set_language, t
+from facehide.instance import SingleInstance
 from facehide.models import ModelError, ensure_models
-from facehide.ui.icons import app_icon
+from facehide.ui.icons import COLOR_MUTED, app_icon, glyph_icon
 from facehide.ui.main_window import MainWindow
 from facehide.ui.styles import APP_QSS
-
-INSTANCE_NAME = "FaceHide.SingleInstance"
 
 
 def run_self_check() -> int:
@@ -78,43 +76,19 @@ def run_self_check() -> int:
     return 0
 
 
-def _raise_existing() -> bool:
-    socket = QLocalSocket()
-    socket.connectToServer(INSTANCE_NAME)
-    if not socket.waitForConnected(150):
-        return False
-    socket.write(b"raise")
-    socket.flush()
-    socket.waitForBytesWritten(150)
-    return True
-
-
-def _listen(app: QApplication, window: MainWindow) -> QLocalServer:
-    QLocalServer.removeServer(INSTANCE_NAME)
-    server = QLocalServer(app)
-    server.listen(INSTANCE_NAME)
-
-    def on_connect() -> None:
-        incoming = server.nextPendingConnection()
-        if incoming:
-            incoming.readyRead.connect(lambda: incoming.readAll())
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-    server.newConnection.connect(on_connect)
-    return server
-
-
 def _install_tray(app: QApplication, window: MainWindow) -> QSystemTrayIcon:
     tray = QSystemTrayIcon(app_icon(), app)
     tray.setToolTip(t("app.name"))
-    menu = QMenu()
-    show = QAction(t("tray.open"))
-    show.triggered.connect(window.showNormal)
-    toggle = QAction(t("tray.toggle"))
+    menu = QMenu(window)
+    menu.setObjectName("TrayMenu")
+    show = QAction(glyph_icon("window", 16, COLOR_MUTED), t("tray.open"), window)
+    show.setMenuRole(QAction.MenuRole.NoRole)
+    show.triggered.connect(window.reveal)
+    toggle = QAction(glyph_icon("monitor", 16, COLOR_MUTED), t("tray.toggle"), window)
+    toggle.setMenuRole(QAction.MenuRole.NoRole)
     toggle.triggered.connect(window.toggle_monitor)
-    quit_action = QAction(t("tray.quit"))
+    quit_action = QAction(glyph_icon("power", 16, COLOR_MUTED), t("tray.quit"), window)
+    quit_action.setMenuRole(QAction.MenuRole.NoRole)
     quit_action.triggered.connect(window.request_quit)
     menu.addAction(show)
     menu.addAction(toggle)
@@ -122,7 +96,7 @@ def _install_tray(app: QApplication, window: MainWindow) -> QSystemTrayIcon:
     menu.addAction(quit_action)
     tray.setContextMenu(menu)
     tray.activated.connect(
-        lambda reason: window.showNormal()
+        lambda reason: window.reveal()
         if reason == QSystemTrayIcon.ActivationReason.Trigger
         else None
     )
@@ -170,9 +144,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         store.replace(settings)
     set_language(store.get().language)
 
-    if _raise_existing():
-        return 0
-
     app = QApplication(args)
     app.setApplicationName(t("app.name"))
     app.setApplicationVersion(__version__)
@@ -181,15 +152,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setStyle("Fusion")
     app.setStyleSheet(APP_QSS)
 
+    holder: dict[str, MainWindow | None] = {"window": None}
+
+    def activate() -> None:
+        window = holder["window"]
+        if window is not None:
+            window.reveal()
+
+    guard = SingleInstance(app, on_activate=activate)
+    if not guard.acquire():
+        return 0
+
     if not _download_models(app):
+        guard.close()
         return 1
 
     gallery = Gallery()
     engine = FaceEngine()
     window = MainWindow(store, gallery, engine)
-    _listen(app, window)
+    holder["window"] = window
     tray = _install_tray(app, window)
-    window.show()
-    if store.get().auto_start_monitor:
-        QTimer.singleShot(600, lambda: tray.showMessage(t("app.name"), t("tray.autostart"), QSystemTrayIcon.MessageIcon.Information, 2500))
-    return app.exec()
+    settings = store.get()
+    start_hidden = ("--minimized" in args or settings.start_minimized) and not settings.dev_mode
+    if start_hidden:
+        window.hide()
+        QTimer.singleShot(
+            400,
+            lambda: tray.showMessage(
+                t("app.name"),
+                t("tray.started_hidden"),
+                QSystemTrayIcon.MessageIcon.Information,
+                2500,
+            ),
+        )
+    else:
+        window.show()
+    if settings.auto_start_monitor and not start_hidden:
+        QTimer.singleShot(
+            600,
+            lambda: tray.showMessage(
+                t("app.name"),
+                t("tray.autostart"),
+                QSystemTrayIcon.MessageIcon.Information,
+                2500,
+            ),
+        )
+    code = app.exec()
+    guard.close()
+    return code

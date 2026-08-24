@@ -1,6 +1,6 @@
 import unittest
 
-from facehide.i18n import current_language, normalize_language, set_language, t
+from facehide.i18n import _STRINGS, current_language, normalize_language, set_language, t
 
 
 class I18nTests(unittest.TestCase):
@@ -28,6 +28,9 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(t("pill.faces", count=3), "Faces 3")
         set_language("zh")
         self.assertEqual(t("pill.faces", count=3), "人脸 3")
+
+    def test_zh_en_keys_match(self) -> None:
+        self.assertEqual(set(_STRINGS["zh"]), set(_STRINGS["en"]))
 
     def test_missing_key_falls_back(self) -> None:
         set_language("en")
