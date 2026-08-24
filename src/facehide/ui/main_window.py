@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QCursor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -45,7 +47,7 @@ from facehide.actions import (
     running_process_names,
 )
 from facehide.camera import CameraInfo, describe_cameras, pick_camera
-from facehide.config import Settings, SettingsStore, WorkApp
+from facehide.config import MessageChannel, Settings, SettingsStore, WorkApp
 from facehide.engine import FaceEngine, NoFaceError
 from facehide.gallery import (
     Gallery,
@@ -57,7 +59,10 @@ from facehide.gallery import (
     rank_people,
 )
 from facehide.i18n import current_language, set_language, t
+from facehide.logbook import LogRecord, format_log_line, write_xlsx
 from facehide.monitor import MonitorThread, PreviewFrame, SeenFace, TriggerEvent, track_seen
+from facehide.notify import NotifyEvent, dispatch
+from facehide.startup import sync_startup
 from facehide.ui.icons import (
     COLOR_ACTIVE,
     COLOR_EMPTY,
@@ -69,6 +74,7 @@ from facehide.ui.icons import (
     glyph_pixmap,
     tray_status,
 )
+from facehide.ui.channels import ChannelDialog, channel_summary
 from facehide.ui.styles import APP_QSS, apply_dark_surface
 
 NAV_ITEMS = (
@@ -76,10 +82,22 @@ NAV_ITEMS = (
     ("nav.faces", "faces"),
     ("nav.work", "work"),
     ("nav.hide", "hide"),
+    ("nav.notify", "notify"),
     ("nav.settings", "settings"),
 )
 NAV_KEYS = tuple(key for key, _glyph in NAV_ITEMS)
 SAMPLE_SOURCE_KEYS = {"auto": "sample.auto", "manual": "sample.manual", "enroll": "sample.enroll"}
+
+
+class _NotifyWorker(QObject):
+    done = Signal(str)
+
+    def start(self, event: NotifyEvent, channels: list[MessageChannel]) -> None:
+        threading.Thread(target=self._run, args=(event, list(channels)), daemon=True).start()
+
+    def _run(self, event: NotifyEvent, channels: list[MessageChannel]) -> None:
+        for line in dispatch(channels, event):
+            self.done.emit(line)
 
 
 def _imread(path: str) -> np.ndarray | None:
@@ -525,6 +543,10 @@ class MainWindow(QMainWindow):
         self._tray_quit: QAction | None = None
         self._tray_hint_shown = False
         self._seen_active: dict[str, float] = {}
+        self._notify_until: dict[str, float] = {}
+        self._log_records: list[LogRecord] = []
+        self._notify_worker = _NotifyWorker(self)
+        self._notify_worker.done.connect(self._log)
         self.setWindowIcon(app_icon())
         self.resize(1180, 760)
         self.setStyleSheet(APP_QSS)
@@ -542,8 +564,16 @@ class MainWindow(QMainWindow):
         self.page_faces = self._build_faces()
         self.page_work = self._build_work()
         self.page_hide = self._build_hide()
+        self.page_notify = self._build_notify()
         self.page_settings = self._build_settings()
-        for page in (self.page_monitor, self.page_faces, self.page_work, self.page_hide, self.page_settings):
+        for page in (
+            self.page_monitor,
+            self.page_faces,
+            self.page_work,
+            self.page_hide,
+            self.page_notify,
+            self.page_settings,
+        ):
             page.setObjectName("Page")
             apply_dark_surface(page)
             self.stack.addWidget(page)
@@ -713,6 +743,9 @@ class MainWindow(QMainWindow):
         pills.addWidget(self.pill_match)
         pills.addWidget(self.pill_faces)
         pills.addStretch(1)
+        self.btn_export_log = QPushButton()
+        self.btn_export_log.clicked.connect(self.export_log)
+        pills.addWidget(self.btn_export_log)
         layout.addLayout(pills)
 
         self.log = QPlainTextEdit()
@@ -843,6 +876,44 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_ent_remove, alignment=Qt.AlignmentFlag.AlignLeft)
         return page
 
+    def _build_notify(self) -> QWidget:
+        page = self._page()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(26, 22, 26, 22)
+        layout.setSpacing(12)
+        self.notify_eyebrow, self.notify_title, self.notify_hint, _head = self._page_header(layout)
+        add_row = QHBoxLayout()
+        self.btn_ch_ding_group = QPushButton()
+        self.btn_ch_ding_app = QPushButton()
+        self.btn_ch_feishu = QPushButton()
+        self.btn_ch_webhook = QPushButton()
+        for kind, btn in (
+            ("dingtalk_group", self.btn_ch_ding_group),
+            ("dingtalk_app", self.btn_ch_ding_app),
+            ("feishu", self.btn_ch_feishu),
+            ("webhook", self.btn_ch_webhook),
+        ):
+            btn.clicked.connect(lambda _=False, k=kind: self._edit_channel(k))
+            add_row.addWidget(btn)
+        add_row.addStretch(1)
+        layout.addLayout(add_row)
+        self.channel_list = QListWidget()
+        self.channel_list.itemDoubleClicked.connect(lambda _item: self._edit_channel())
+        layout.addWidget(self.channel_list, 1)
+        row = QHBoxLayout()
+        self.btn_ch_edit = QPushButton()
+        self.btn_ch_edit.clicked.connect(lambda: self._edit_channel())
+        self.btn_ch_test = QPushButton()
+        self.btn_ch_test.clicked.connect(self._test_channel)
+        self.btn_ch_remove = QPushButton(objectName="Danger")
+        self.btn_ch_remove.clicked.connect(self._remove_channel)
+        row.addWidget(self.btn_ch_edit)
+        row.addWidget(self.btn_ch_test)
+        row.addWidget(self.btn_ch_remove)
+        row.addStretch(1)
+        layout.addLayout(row)
+        return page
+
     def _build_settings(self) -> QWidget:
         page = self._page()
         layout = QVBoxLayout(page)
@@ -900,6 +971,9 @@ class MainWindow(QMainWindow):
         self.chk_start_min = QCheckBox()
         self.chk_start_min.stateChanged.connect(self._save_from_ui)
         form.addWidget(self.chk_start_min)
+        self.chk_boot = QCheckBox()
+        self.chk_boot.stateChanged.connect(self._save_from_ui)
+        form.addWidget(self.chk_boot)
         layout.addWidget(card)
         layout.addStretch(1)
         return page
@@ -937,6 +1011,7 @@ class MainWindow(QMainWindow):
         self.mon_title.setText(t("monitor.title"))
         self.mon_hint.setText(t("monitor.hint"))
         self.btn_trigger.setText(t("btn.trigger"))
+        self.btn_export_log.setText(t("btn.export_excel"))
         self._sync_monitor_button()
         pixmap = self.preview.pixmap()
         if pixmap is None or pixmap.isNull():
@@ -975,12 +1050,24 @@ class MainWindow(QMainWindow):
         self.btn_ent_pick.setText(t("hide.pick"))
         self.btn_ent_remove.setText(t("hide.remove"))
 
+        self.notify_eyebrow.setText(t("app.eyebrow"))
+        self.notify_title.setText(t("notify.title"))
+        self.notify_hint.setText(t("notify.hint"))
+        self.btn_ch_ding_group.setText(t("channel.add_dingtalk_group"))
+        self.btn_ch_ding_app.setText(t("channel.add_dingtalk_app"))
+        self.btn_ch_feishu.setText(t("channel.add_feishu"))
+        self.btn_ch_webhook.setText(t("channel.add_webhook"))
+        self.btn_ch_edit.setText(t("channel.edit"))
+        self.btn_ch_test.setText(t("channel.test"))
+        self.btn_ch_remove.setText(t("channel.remove"))
+
         self.set_eyebrow.setText(t("app.eyebrow"))
         self.set_title.setText(t("settings.title"))
         self.set_camera_label.setText(t("settings.camera"))
         self.chk_autolink.setText(t("settings.autolink"))
         self.chk_autostart.setText(t("settings.autostart"))
         self.chk_start_min.setText(t("settings.start_minimized"))
+        self.chk_boot.setText(t("settings.start_on_boot"))
         self.chk_dev.setText(t("settings.dev"))
 
         self._apply_dev_chrome()
@@ -990,6 +1077,7 @@ class MainWindow(QMainWindow):
             self._reload_work(self.store.get())
             self._reload_open_apps()
             self._reload_faces()
+            self._reload_channels(self.store.get())
         self._apply_tray_language()
 
     def _apply_tray_language(self) -> None:
@@ -1012,6 +1100,7 @@ class MainWindow(QMainWindow):
         self.cooldown.setValue(int(settings.cooldown_seconds))
         self.chk_autostart.setChecked(settings.auto_start_monitor)
         self.chk_start_min.setChecked(settings.start_minimized)
+        self.chk_boot.setChecked(settings.start_on_boot)
         self.chk_dev.setChecked(settings.dev_mode)
         self.chk_autolink.setChecked(settings.auto_link_same_person)
         self._apply_dev_chrome(settings)
@@ -1021,6 +1110,7 @@ class MainWindow(QMainWindow):
         self._sync_slider_labels()
         self._reload_work(settings)
         self._reload_entertainment(settings)
+        self._reload_channels(settings)
         self._reload_faces()
         self._reload_open_apps()
         self._loading = False
@@ -1039,6 +1129,7 @@ class MainWindow(QMainWindow):
         settings.cooldown_seconds = float(self.cooldown.value())
         settings.auto_start_monitor = self.chk_autostart.isChecked()
         settings.start_minimized = self.chk_start_min.isChecked()
+        settings.start_on_boot = self.chk_boot.isChecked()
         settings.dev_mode = self.chk_dev.isChecked()
         settings.auto_link_same_person = self.chk_autolink.isChecked()
         settings.hide_foreground = self.chk_foreground.isChecked()
@@ -1051,6 +1142,14 @@ class MainWindow(QMainWindow):
         if getattr(self, "_loading", False):
             return
         settings = self._collect_settings()
+        try:
+            sync_startup(settings.start_on_boot)
+        except OSError as exc:
+            QMessageBox.warning(self, t("settings.title"), t("settings.boot_fail", error=exc))
+            self.chk_boot.blockSignals(True)
+            self.chk_boot.setChecked(not settings.start_on_boot)
+            self.chk_boot.blockSignals(False)
+            settings.start_on_boot = self.chk_boot.isChecked()
         self.store.replace(settings)
         self._apply_dev_chrome(settings)
 
@@ -1122,6 +1221,65 @@ class MainWindow(QMainWindow):
         self.ent_list.clear()
         self.ent_list.addItems(settings.entertainment_processes)
 
+    def _reload_channels(self, settings: Settings) -> None:
+        if not hasattr(self, "channel_list"):
+            return
+        self.channel_list.clear()
+        if not settings.channels:
+            self.channel_list.addItem(t("channel.empty"))
+            return
+        for channel in settings.channels:
+            item = QListWidgetItem(channel_summary(channel))
+            item.setData(Qt.ItemDataRole.UserRole, channel.id)
+            self.channel_list.addItem(item)
+
+    def _current_channel(self) -> MessageChannel | None:
+        item = self.channel_list.currentItem()
+        if item is None:
+            return None
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        if not cid:
+            return None
+        for channel in self.store.get().channels:
+            if channel.id == cid:
+                return channel
+        return None
+
+    def _edit_channel(self, kind: str | None = None) -> None:
+        existing = None if kind else self._current_channel()
+        if kind is None and existing is None:
+            QMessageBox.information(self, t("notify.title"), t("channel.pick_first"))
+            return
+        dialog = ChannelDialog(self, kind or existing.kind, existing)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = dialog.result_channel()
+        settings = self.store.get()
+        if existing is None:
+            settings.channels.append(result)
+        else:
+            settings.channels = [result if item.id == existing.id else item for item in settings.channels]
+        self.store.replace(settings)
+        self._reload_channels(settings)
+
+    def _remove_channel(self) -> None:
+        channel = self._current_channel()
+        if channel is None:
+            QMessageBox.information(self, t("notify.title"), t("channel.pick_first"))
+            return
+        settings = self.store.get()
+        settings.channels = [item for item in settings.channels if item.id != channel.id]
+        self.store.replace(settings)
+        self._reload_channels(settings)
+
+    def _test_channel(self) -> None:
+        channel = self._current_channel()
+        if channel is None:
+            QMessageBox.information(self, t("notify.title"), t("channel.pick_first"))
+            return
+        event = NotifyEvent(person=t("app.name"), score=1.0, when=datetime.now(), test=True)
+        self._notify_worker.start(event, [channel])
+
     def _reload_faces(self) -> None:
         while self.face_grid.count():
             item = self.face_grid.takeAt(0)
@@ -1184,6 +1342,10 @@ class MainWindow(QMainWindow):
         status = QLabel(t("faces.status_on") if person.enabled else t("faces.status_off"), objectName="Pill")
         status.setProperty("state", "on" if person.enabled else "warn")
         info.addWidget(status)
+        if person.blacklisted:
+            blocked = QLabel(t("faces.status_block"), objectName="Pill")
+            blocked.setProperty("state", "alert")
+            info.addWidget(blocked)
         info.addStretch(1)
         layout.addLayout(info)
 
@@ -1194,6 +1356,11 @@ class MainWindow(QMainWindow):
             lambda checked, pid=person.id, host=card, badge=status: self._toggle_person_enabled(pid, checked, host, badge)
         )
         layout.addWidget(enable)
+        block = QCheckBox(t("faces.blacklist"))
+        block.setChecked(person.blacklisted)
+        block.setToolTip(t("faces.blacklist_hint"))
+        block.toggled.connect(lambda checked, pid=person.id: self._toggle_person_blacklist(pid, checked))
+        layout.addWidget(block)
         if not person.enabled:
             card.setProperty("muted", "true")
 
@@ -1229,7 +1396,17 @@ class MainWindow(QMainWindow):
         card.setProperty("muted", "true" if not enabled else "false")
         card.style().unpolish(card)
         card.style().polish(card)
-        self._log(t("log.enabled" if enabled else "log.disabled", name=name))
+        self._log(t("log.enabled" if enabled else "log.disabled", name=name), person=name)
+
+    def _toggle_person_blacklist(self, person_id: str, blacklisted: bool) -> None:
+        try:
+            self.gallery.set_blacklisted(person_id, blacklisted)
+        except KeyError:
+            return
+        person = self.gallery.person(person_id)
+        name = person.name if person is not None else person_id
+        self._log(t("log.blacklist_on" if blacklisted else "log.blacklist_off", name=name), person=name)
+        self._reload_faces()
 
     def _sample_thumb(self, person: Person, sample: Sample) -> QLabel:
         thumb = QLabel(objectName="Thumb")
@@ -1365,17 +1542,63 @@ class MainWindow(QMainWindow):
         self._seen_active, newly = track_seen(self._seen_active, present, time.monotonic())
         for item in newly:
             key = "log.seen" if item.hide_enabled else "log.seen_off"
-            self._log(t(key, name=item.name, score=item.score))
+            self._log(t(key, name=item.name, score=item.score), person=item.name)
+            if item.blacklisted:
+                self._notify_blacklist(item)
+
+    def _notify_blacklist(self, item: SeenFace) -> None:
+        now = time.monotonic()
+        until = self._notify_until.get(item.name, 0.0)
+        if now < until:
+            return
+        cooldown = self.store.get().cooldown_seconds
+        self._notify_until[item.name] = now + max(1.0, cooldown)
+        self._log(t("log.blacklist", name=item.name, score=item.score), person=item.name)
+        channels = [channel for channel in self.store.get().channels if channel.enabled]
+        event = NotifyEvent(person=item.name, score=item.score, when=datetime.now())
+        self._notify_worker.start(event, channels)
 
     def _on_triggered(self, event: TriggerEvent) -> None:
         if event.error:
-            self._log(t("log.trigger_fail", name=event.person_name, error=event.error))
+            self._log(t("log.trigger_fail", name=event.person_name, error=event.error), person=event.person_name)
             return
         key = "log.drill" if event.dry_run else "log.hit"
-        self._log(t(key, name=event.person_name, score=event.score, actions=_join_actions(event.actions)))
+        self._log(
+            t(key, name=event.person_name, score=event.score, actions=_join_actions(event.actions)),
+            person=event.person_name,
+        )
 
-    def _log(self, text: str) -> None:
-        self.log.appendPlainText(text)
+    def _log(self, text: str, person: str | None = None) -> None:
+        when = datetime.now()
+        self._log_records.append(LogRecord(when=when, text=text, person=person))
+        self.log.appendPlainText(format_log_line(when, text))
+
+    def export_log(self) -> None:
+        if not self._log_records:
+            QMessageBox.information(self, t("file.export_log"), t("log.export_empty"))
+            return
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        desktop = Path.home() / "Desktop"
+        folder = desktop if desktop.is_dir() else Path.home()
+        suggested = str(folder / f"FaceHide-{stamp}.xlsx")
+        path, _ = QFileDialog.getSaveFileName(self, t("file.export_log"), suggested, t("file.excel"))
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".xlsx":
+            target = target.with_suffix(".xlsx")
+        try:
+            write_xlsx(
+                target,
+                self._log_records,
+                headers=(t("log.col_time"), t("log.col_person"), t("log.col_text")),
+                sheet=t("log.sheet"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, t("file.export_log"), t("log.export_fail", error=exc))
+            return
+        self._log(t("log.export_ok", path=target))
+        QMessageBox.information(self, t("file.export_log"), t("log.export_ok", path=target))
 
     def _ask_name(self, default: str = "") -> str | None:
         name, ok = QInputDialog.getText(self, t("ask.name_title"), t("ask.name_label"), text=default)
@@ -1419,7 +1642,7 @@ class MainWindow(QMainWindow):
 
     def _register_new_face(self, face: tuple[np.ndarray, np.ndarray], name: str) -> None:
         person = self._create_person(name, [face], "enroll")
-        self._log(t("log.enrolled", name=person.name))
+        self._log(t("log.enrolled", name=person.name), person=person.name)
 
     def _resolve_one_face(
         self,

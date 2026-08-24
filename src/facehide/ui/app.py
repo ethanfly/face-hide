@@ -19,6 +19,7 @@ from facehide.engine import FaceEngine
 from facehide.gallery import Gallery
 from facehide.i18n import set_language, t
 from facehide.instance import SingleInstance
+from facehide.startup import sync_startup
 from facehide.models import ModelError, ensure_models
 from facehide.ui.icons import COLOR_MUTED, app_icon, glyph_icon
 from facehide.ui.main_window import MainWindow
@@ -143,6 +144,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.dev_mode = True
         store.replace(settings)
     set_language(store.get().language)
+    try:
+        if store.get().start_on_boot:
+            sync_startup(True)
+    except OSError:
+        pass
 
     app = QApplication(args)
     app.setApplicationName(t("app.name"))

@@ -257,6 +257,24 @@ QCheckBox::indicator:disabled {
     background: #171c26;
     border: 1px solid #262d3a;
 }
+QRadioButton {
+    spacing: 8px;
+    background: transparent;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 1px solid #3a4558;
+    background: #121826;
+}
+QRadioButton::indicator:hover {
+    border: 1px solid #5b8cff;
+}
+QRadioButton::indicator:checked {
+    background: #3a6ae0;
+    border: 1px solid #5b8cff;
+}
 QScrollArea, QScrollArea > QWidget, QAbstractScrollArea::viewport, QWidget#FaceHost {
     border: 0;
     background: #0b0f16;

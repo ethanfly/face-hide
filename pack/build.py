@@ -125,6 +125,11 @@ hiddenimports += [
     "facehide.ui.styles",
     "facehide.ui.icons",
     "facehide.mark",
+    "facehide.logbook",
+    "facehide.notify",
+    "facehide.startup",
+    "facehide.ui.channels",
+    "openpyxl",
 ]
 
 a = Analysis(

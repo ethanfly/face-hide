@@ -2,7 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from facehide.config import Settings, SettingsStore, WorkApp, load_settings, save_settings, settings_from_dict
+from facehide.config import (
+    KvPair,
+    MessageChannel,
+    Settings,
+    SettingsStore,
+    WorkApp,
+    load_settings,
+    save_settings,
+    settings_from_dict,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -62,6 +71,13 @@ class ConfigTests(unittest.TestCase):
             save_settings(Settings(start_minimized=True), path)
             self.assertTrue(load_settings(path).start_minimized)
 
+    def test_start_on_boot_defaults_off(self) -> None:
+        self.assertFalse(settings_from_dict({}).start_on_boot)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_settings(Settings(start_on_boot=True), path)
+            self.assertTrue(load_settings(path).start_on_boot)
+
     def test_language_defaults_and_normalizes(self) -> None:
         self.assertEqual(settings_from_dict({}).language, "zh")
         self.assertEqual(settings_from_dict({"language": "en-US"}).language, "en")
@@ -69,6 +85,27 @@ class ConfigTests(unittest.TestCase):
             path = Path(tmp) / "config.json"
             save_settings(Settings(language="en"), path)
             self.assertEqual(load_settings(path).language, "en")
+
+    def test_channels_roundtrip(self) -> None:
+        self.assertEqual(settings_from_dict({}).channels, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            channel = MessageChannel(
+                id="c1",
+                kind="dingtalk_group",
+                name="值班群",
+                auth_mode="keyword",
+                webhook="https://oapi.dingtalk.com/robot/send?access_token=x",
+                keyword="告警",
+                headers=[KvPair("X-Token", "abc")],
+            )
+            save_settings(Settings(channels=[channel]), path)
+            loaded = load_settings(path)
+            self.assertEqual(len(loaded.channels), 1)
+            self.assertEqual(loaded.channels[0].kind, "dingtalk_group")
+            self.assertEqual(loaded.channels[0].keyword, "告警")
+            self.assertEqual(loaded.channels[0].headers[0].key, "X-Token")
+            self.assertEqual(settings_from_dict({"channels": [{"kind": "nope"}]}).channels, [])
 
 
 if __name__ == "__main__":

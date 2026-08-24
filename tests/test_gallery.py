@@ -120,6 +120,19 @@ class GalleryTests(unittest.TestCase):
             split = again.split_sample(loaded.id, again.people()[0].samples[1].id, "拆出")
             self.assertFalse(split.enabled)
 
+    def test_blacklist_persists_and_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gallery = Gallery(root / "gallery.json", root)
+            person = gallery.add_person("同事", np.ones(8, dtype=np.float32), _thumb())
+            self.assertFalse(person.blacklisted)
+            gallery.set_blacklisted(person.id, True)
+            again = Gallery(root / "gallery.json", root)
+            self.assertTrue(again.people()[0].blacklisted)
+            other = gallery.add_person("路人", np.zeros(8, dtype=np.float32), _thumb())
+            gallery.merge_people(other.id, person.id)
+            self.assertTrue(gallery.person(other.id).blacklisted)
+
 
 if __name__ == "__main__":
     unittest.main()

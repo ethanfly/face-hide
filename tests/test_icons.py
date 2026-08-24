@@ -64,6 +64,7 @@ class GlyphTests(unittest.TestCase):
             "camera",
             "window",
             "power",
+            "notify",
         )
         for name in names:
             pix = glyph_pixmap(name, 18)

@@ -33,6 +33,7 @@ class Person:
     name: str
     samples: list[Sample] = field(default_factory=list)
     enabled: bool = True
+    blacklisted: bool = False
 
     @property
     def auto_linked(self) -> bool:
@@ -202,6 +203,14 @@ class Gallery:
             person.enabled = bool(enabled)
             self._save()
 
+    def set_blacklisted(self, person_id: str, blacklisted: bool) -> None:
+        with self._lock:
+            person = self._find(person_id)
+            if person is None:
+                raise KeyError(person_id)
+            person.blacklisted = bool(blacklisted)
+            self._save()
+
     def merge_people(self, keep_id: str, absorb_id: str) -> Person:
         if keep_id == absorb_id:
             person = self.person(keep_id)
@@ -216,6 +225,7 @@ class Gallery:
             if absorb is None:
                 raise KeyError(absorb_id)
             keep.samples.extend(absorb.samples)
+            keep.blacklisted = keep.blacklisted or absorb.blacklisted
             self._people = [item for item in self._people if item.id != absorb_id]
             self._save()
             return keep
@@ -236,6 +246,7 @@ class Gallery:
                 name=name.strip() or "未命名",
                 samples=[sample],
                 enabled=person.enabled,
+                blacklisted=person.blacklisted,
             )
             self._people.append(created)
             self._save()
@@ -322,6 +333,7 @@ class Gallery:
             id=str(item.get("id") or new_id()),
             name=str(item.get("name") or "未命名"),
             enabled=bool(item.get("enabled", True)),
+            blacklisted=bool(item.get("blacklisted", False)),
         )
         for sample_raw in item.get("samples") or []:
             if not isinstance(sample_raw, dict):
@@ -352,6 +364,7 @@ class Gallery:
                     "id": person.id,
                     "name": person.name,
                     "enabled": person.enabled,
+                    "blacklisted": person.blacklisted,
                     "samples": [
                         {
                             "id": sample.id,

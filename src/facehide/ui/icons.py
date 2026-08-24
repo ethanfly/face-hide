@@ -201,6 +201,19 @@ def _g_power(p: QPainter) -> None:
     p.drawLine(QPointF(12.0, 4.4), QPointF(12.0, 12.0))
 
 
+def _g_notify(p: QPainter) -> None:
+    path = QPainterPath()
+    path.moveTo(6.2, 15.5)
+    path.cubicTo(6.2, 10.2, 8.2, 6.2, 12.0, 6.2)
+    path.cubicTo(15.8, 6.2, 17.8, 10.2, 17.8, 15.5)
+    path.lineTo(19.4, 17.8)
+    path.lineTo(4.6, 17.8)
+    path.closeSubpath()
+    p.drawPath(path)
+    p.drawArc(QRectF(10.2, 17.4, 3.6, 3.6), 200 * 16, 140 * 16)
+    p.drawLine(QPointF(12.0, 4.4), QPointF(12.0, 6.2))
+
+
 _GLYPHS: dict[str, Callable[[QPainter], None]] = {
     "monitor": _g_monitor,
     "camera": _g_camera,
@@ -214,6 +227,7 @@ _GLYPHS: dict[str, Callable[[QPainter], None]] = {
     "upload": _g_upload,
     "window": _g_window,
     "power": _g_power,
+    "notify": _g_notify,
 }
 
 __all__ = [
