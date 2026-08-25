@@ -13,6 +13,8 @@ from facehide.paths import config_path
 
 CHANNEL_KINDS = ("dingtalk_group", "dingtalk_app", "feishu", "webhook")
 AUTH_MODES = ("keyword", "sign", "ip")
+NOTIFY_TEMPLATES = ("classic", "playful", "privacy")
+NOTIFY_NAME_MODES = ("full", "initial", "nickname")
 
 
 @dataclass
@@ -67,6 +69,8 @@ class Settings:
     dev_mode: bool = False
     auto_link_same_person: bool = True
     language: str = "zh"
+    notify_template: str = "classic"
+    notify_name_mode: str = "full"
     work_apps: list[WorkApp] = field(default_factory=list)
     entertainment_processes: list[str] = field(default_factory=list)
     channels: list[MessageChannel] = field(default_factory=list)
@@ -150,6 +154,12 @@ def settings_from_dict(data: dict[str, Any]) -> Settings:
         channel = _channel_from(item)
         if channel:
             channels.append(channel)
+    template = str(data.get("notify_template") or "classic").strip().lower()
+    if template not in NOTIFY_TEMPLATES:
+        template = "classic"
+    name_mode = str(data.get("notify_name_mode") or "full").strip().lower()
+    if name_mode not in NOTIFY_NAME_MODES:
+        name_mode = "full"
     return Settings(
         camera_index=int(data.get("camera_index", 0)),
         frame_width=int(data.get("frame_width", 640)),
@@ -167,6 +177,8 @@ def settings_from_dict(data: dict[str, Any]) -> Settings:
         dev_mode=bool(data.get("dev_mode", False)),
         auto_link_same_person=bool(data.get("auto_link_same_person", True)),
         language=normalize_language(data.get("language", "zh")),
+        notify_template=template,
+        notify_name_mode=name_mode,
         work_apps=apps,
         entertainment_processes=processes,
         channels=channels,

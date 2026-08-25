@@ -86,6 +86,18 @@ class ConfigTests(unittest.TestCase):
             save_settings(Settings(language="en"), path)
             self.assertEqual(load_settings(path).language, "en")
 
+    def test_notify_template_defaults_and_roundtrip(self) -> None:
+        self.assertEqual(settings_from_dict({}).notify_template, "classic")
+        self.assertEqual(settings_from_dict({}).notify_name_mode, "full")
+        self.assertEqual(settings_from_dict({"notify_template": "nope"}).notify_template, "classic")
+        self.assertEqual(settings_from_dict({"notify_name_mode": "secret"}).notify_name_mode, "full")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_settings(Settings(notify_template="privacy", notify_name_mode="initial"), path)
+            loaded = load_settings(path)
+            self.assertEqual(loaded.notify_template, "privacy")
+            self.assertEqual(loaded.notify_name_mode, "initial")
+
     def test_channels_roundtrip(self) -> None:
         self.assertEqual(settings_from_dict({}).channels, [])
         with tempfile.TemporaryDirectory() as tmp:

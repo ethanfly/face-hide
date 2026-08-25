@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSlider,
     QStackedWidget,
@@ -47,7 +49,14 @@ from facehide.actions import (
     running_process_names,
 )
 from facehide.camera import CameraInfo, describe_cameras, pick_camera
-from facehide.config import MessageChannel, Settings, SettingsStore, WorkApp
+from facehide.config import (
+    NOTIFY_NAME_MODES,
+    NOTIFY_TEMPLATES,
+    MessageChannel,
+    Settings,
+    SettingsStore,
+    WorkApp,
+)
 from facehide.engine import FaceEngine, NoFaceError
 from facehide.gallery import (
     Gallery,
@@ -61,7 +70,7 @@ from facehide.gallery import (
 from facehide.i18n import current_language, set_language, t
 from facehide.logbook import LogRecord, format_log_line, write_xlsx
 from facehide.monitor import MonitorThread, PreviewFrame, SeenFace, TriggerEvent, track_seen
-from facehide.notify import NotifyEvent, dispatch
+from facehide.notify import NotifyEvent, dispatch, preview_text
 from facehide.startup import sync_startup
 from facehide.ui.icons import (
     COLOR_ACTIVE,
@@ -882,6 +891,49 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(26, 22, 26, 22)
         layout.setSpacing(12)
         self.notify_eyebrow, self.notify_title, self.notify_hint, _head = self._page_header(layout)
+
+        card = QFrame(objectName="SettingsCard")
+        form = QVBoxLayout(card)
+        form.setContentsMargins(16, 14, 16, 14)
+        form.setSpacing(10)
+        grid = QFormLayout()
+        grid.setSpacing(10)
+        grid.setHorizontalSpacing(16)
+        self.notify_template_label = QLabel(objectName="Section")
+        self.notify_name_mode_label = QLabel(objectName="Section")
+        self.notify_preview_person_label = QLabel(objectName="Section")
+        self._template_radios: dict[str, QRadioButton] = {}
+        self._name_mode_radios: dict[str, QRadioButton] = {}
+        template_row, self._template_group = self._radio_row(NOTIFY_TEMPLATES, self._template_radios)
+        name_row, self._name_mode_group = self._radio_row(NOTIFY_NAME_MODES, self._name_mode_radios)
+        for radio in self._template_radios.values():
+            radio.toggled.connect(self._on_notify_template_changed)
+        for radio in self._name_mode_radios.values():
+            radio.toggled.connect(self._on_notify_name_mode_changed)
+        grid.addRow(self.notify_template_label, template_row)
+        grid.addRow(self.notify_name_mode_label, name_row)
+        self.notify_preview_person = QComboBox()
+        self.notify_preview_person.currentIndexChanged.connect(self._refresh_notify_preview)
+        grid.addRow(self.notify_preview_person_label, self.notify_preview_person)
+        form.addLayout(grid)
+        self.notify_template_hint = QLabel(objectName="Hint")
+        self.notify_template_hint.setWordWrap(True)
+        form.addWidget(self.notify_template_hint)
+        self.notify_name_hint = QLabel(objectName="Hint")
+        self.notify_name_hint.setWordWrap(True)
+        form.addWidget(self.notify_name_hint)
+        self.notify_preview_label = QLabel(objectName="Section")
+        form.addWidget(self.notify_preview_label)
+        self.notify_preview = QPlainTextEdit()
+        self.notify_preview.setObjectName("NotifyPreview")
+        self.notify_preview.setReadOnly(True)
+        self.notify_preview.setMaximumHeight(110)
+        form.addWidget(self.notify_preview)
+        self.notify_preview_note = QLabel(objectName="Hint")
+        self.notify_preview_note.setWordWrap(True)
+        form.addWidget(self.notify_preview_note)
+        layout.addWidget(card)
+
         add_row = QHBoxLayout()
         self.btn_ch_ding_group = QPushButton()
         self.btn_ch_ding_app = QPushButton()
@@ -913,6 +965,127 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         layout.addLayout(row)
         return page
+
+    def _radio_row(self, keys: tuple[str, ...], store: dict[str, QRadioButton]) -> tuple[QWidget, QButtonGroup]:
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(14)
+        group = QButtonGroup(host)
+        group.setExclusive(True)
+        for key in keys:
+            radio = QRadioButton()
+            store[key] = radio
+            group.addButton(radio)
+            row.addWidget(radio)
+        row.addStretch(1)
+        return host, group
+
+    def _selected_notify_template(self) -> str:
+        for key, radio in self._template_radios.items():
+            if radio.isChecked():
+                return key
+        return "classic"
+
+    def _selected_notify_name_mode(self) -> str:
+        for key, radio in self._name_mode_radios.items():
+            if radio.isChecked():
+                return key
+        return "full"
+
+    def _on_notify_template_changed(self, checked: bool = False) -> None:
+        if getattr(self, "_loading", False) or not checked:
+            return
+        self._sync_notify_privacy_mode()
+        self._save_from_ui()
+        self._apply_notify_template_labels()
+
+    def _on_notify_name_mode_changed(self, checked: bool = False) -> None:
+        if getattr(self, "_loading", False) or not checked:
+            return
+        self._save_from_ui()
+        self._refresh_notify_preview()
+
+    def _sync_notify_privacy_mode(self) -> None:
+        privacy = self._selected_notify_template() == "privacy"
+        full = self._name_mode_radios["full"]
+        full.setEnabled(not privacy)
+        if privacy and full.isChecked():
+            self._name_mode_radios["nickname"].setChecked(True)
+
+    def _load_notify_template(self, settings: Settings) -> None:
+        if not hasattr(self, "_template_radios"):
+            return
+        template = settings.notify_template if settings.notify_template in NOTIFY_TEMPLATES else "classic"
+        mode = settings.notify_name_mode if settings.notify_name_mode in NOTIFY_NAME_MODES else "full"
+        self._template_radios[template].setChecked(True)
+        self._name_mode_radios[mode].setChecked(True)
+        self._sync_notify_privacy_mode()
+        self._apply_notify_template_labels()
+
+    def _apply_notify_template_labels(self) -> None:
+        if not hasattr(self, "_template_radios"):
+            return
+        self.notify_template_label.setText(t("notify.template"))
+        self.notify_name_mode_label.setText(t("notify.name_mode"))
+        self.notify_preview_person_label.setText(t("notify.preview_person"))
+        self.notify_preview_label.setText(t("notify.preview"))
+        self.notify_preview_note.setText(t("notify.preview_note"))
+        for key, radio in self._template_radios.items():
+            radio.setText(t(f"notify.template.{key}"))
+        for key, radio in self._name_mode_radios.items():
+            radio.setText(t(f"notify.name_mode.{key}"))
+        template = self._selected_notify_template()
+        self.notify_template_hint.setText(t(f"notify.template.hint.{template}"))
+        hint = t("notify.name_mode.hint")
+        if template == "privacy":
+            hint = f"{t('notify.name_mode.privacy_lock')} {hint}"
+        self.notify_name_hint.setText(hint)
+        self._refresh_notify_preview_people()
+
+    def _preview_identity(self) -> tuple[str, str]:
+        if hasattr(self, "notify_preview_person"):
+            data = self.notify_preview_person.currentData()
+            if data:
+                person = self.gallery.person(str(data))
+                if person is not None:
+                    return person.name, person.nickname
+        if current_language() == "en":
+            return "Ada Lovelace", "Ace"
+        return "张三", "阿三"
+
+    def _refresh_notify_preview_people(self) -> None:
+        if not hasattr(self, "notify_preview_person"):
+            return
+        box = self.notify_preview_person
+        current = box.currentData()
+        box.blockSignals(True)
+        box.clear()
+        people = self.gallery.people()
+        if not people:
+            box.addItem(t("notify.preview_sample"), None)
+        else:
+            for person in people:
+                label = person.name
+                if person.nickname.strip():
+                    label = f"{person.name}  ·  {person.nickname}"
+                box.addItem(label, person.id)
+        idx = box.findData(current)
+        box.setCurrentIndex(idx if idx >= 0 else 0)
+        box.blockSignals(False)
+        self._refresh_notify_preview()
+
+    def _refresh_notify_preview(self) -> None:
+        if not hasattr(self, "notify_preview"):
+            return
+        name, nickname = self._preview_identity()
+        text = preview_text(
+            name,
+            nickname=nickname,
+            template=self._selected_notify_template(),
+            name_mode=self._selected_notify_name_mode(),
+        )
+        self.notify_preview.setPlainText(text)
 
     def _build_settings(self) -> QWidget:
         page = self._page()
@@ -1053,6 +1226,7 @@ class MainWindow(QMainWindow):
         self.notify_eyebrow.setText(t("app.eyebrow"))
         self.notify_title.setText(t("notify.title"))
         self.notify_hint.setText(t("notify.hint"))
+        self._apply_notify_template_labels()
         self.btn_ch_ding_group.setText(t("channel.add_dingtalk_group"))
         self.btn_ch_ding_app.setText(t("channel.add_dingtalk_app"))
         self.btn_ch_feishu.setText(t("channel.add_feishu"))
@@ -1108,6 +1282,7 @@ class MainWindow(QMainWindow):
         self.chk_others.setChecked(settings.minimize_other_windows)
         self.chk_fullscreen.setChecked(settings.break_fullscreen)
         self._sync_slider_labels()
+        self._load_notify_template(settings)
         self._reload_work(settings)
         self._reload_entertainment(settings)
         self._reload_channels(settings)
@@ -1136,6 +1311,8 @@ class MainWindow(QMainWindow):
         settings.minimize_other_windows = self.chk_others.isChecked()
         settings.break_fullscreen = self.chk_fullscreen.isChecked()
         settings.language = current_language()
+        settings.notify_template = self._selected_notify_template()
+        settings.notify_name_mode = self._selected_notify_name_mode()
         return settings
 
     def _save_from_ui(self) -> None:
@@ -1277,7 +1454,17 @@ class MainWindow(QMainWindow):
         if channel is None:
             QMessageBox.information(self, t("notify.title"), t("channel.pick_first"))
             return
-        event = NotifyEvent(person=t("app.name"), score=1.0, when=datetime.now(), test=True)
+        name, nickname = self._preview_identity()
+        settings = self.store.get()
+        event = NotifyEvent(
+            person=name,
+            score=1.0,
+            when=datetime.now(),
+            test=True,
+            nickname=nickname,
+            template=settings.notify_template,
+            name_mode=settings.notify_name_mode,
+        )
         self._notify_worker.start(event, [channel])
 
     def _reload_faces(self) -> None:
@@ -1305,10 +1492,12 @@ class MainWindow(QMainWindow):
             box.addWidget(hint)
             self.face_grid.addWidget(empty)
             self.face_grid.addStretch(1)
+            self._refresh_notify_preview_people()
             return
         for person in people:
             self.face_grid.addWidget(self._face_card(person))
         self.face_grid.addStretch(1)
+        self._refresh_notify_preview_people()
 
     def _face_card(self, person: Person) -> QFrame:
         card = self._card()
@@ -1361,6 +1550,17 @@ class MainWindow(QMainWindow):
         block.setToolTip(t("faces.blacklist_hint"))
         block.toggled.connect(lambda checked, pid=person.id: self._toggle_person_blacklist(pid, checked))
         layout.addWidget(block)
+        nick_row = QHBoxLayout()
+        nick_label = QLabel(t("faces.nickname"))
+        nick_label.setToolTip(t("faces.nickname_hint"))
+        nick = QLineEdit(person.nickname)
+        nick.setPlaceholderText(t("faces.nickname_ph"))
+        nick.setToolTip(t("faces.nickname_hint"))
+        nick.setClearButtonEnabled(True)
+        nick.editingFinished.connect(lambda pid=person.id, box=nick: self._save_nickname(pid, box.text()))
+        nick_row.addWidget(nick_label)
+        nick_row.addWidget(nick, 1)
+        layout.addLayout(nick_row)
         if not person.enabled:
             card.setProperty("muted", "true")
 
@@ -1407,6 +1607,13 @@ class MainWindow(QMainWindow):
         name = person.name if person is not None else person_id
         self._log(t("log.blacklist_on" if blacklisted else "log.blacklist_off", name=name), person=name)
         self._reload_faces()
+
+    def _save_nickname(self, person_id: str, nickname: str) -> None:
+        try:
+            self.gallery.set_nickname(person_id, nickname)
+        except KeyError:
+            return
+        self._refresh_notify_preview_people()
 
     def _sample_thumb(self, person: Person, sample: Sample) -> QLabel:
         thumb = QLabel(objectName="Thumb")
@@ -1551,11 +1758,19 @@ class MainWindow(QMainWindow):
         until = self._notify_until.get(item.name, 0.0)
         if now < until:
             return
-        cooldown = self.store.get().cooldown_seconds
+        settings = self.store.get()
+        cooldown = settings.cooldown_seconds
         self._notify_until[item.name] = now + max(1.0, cooldown)
         self._log(t("log.blacklist", name=item.name, score=item.score), person=item.name)
-        channels = [channel for channel in self.store.get().channels if channel.enabled]
-        event = NotifyEvent(person=item.name, score=item.score, when=datetime.now())
+        channels = [channel for channel in settings.channels if channel.enabled]
+        event = NotifyEvent(
+            person=item.name,
+            score=item.score,
+            when=datetime.now(),
+            nickname=item.nickname,
+            template=settings.notify_template,
+            name_mode=settings.notify_name_mode,
+        )
         self._notify_worker.start(event, channels)
 
     def _on_triggered(self, event: TriggerEvent) -> None:

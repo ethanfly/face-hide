@@ -22,6 +22,7 @@ class SeenFace:
     score: float
     hide_enabled: bool
     blacklisted: bool = False
+    nickname: str = ""
 
 
 @dataclass
@@ -171,6 +172,7 @@ class MonitorThread(QThread):
                             score=hit.match.score,
                             hide_enabled=hit.match.person.enabled,
                             blacklisted=hit.match.person.blacklisted,
+                            nickname=hit.match.person.nickname,
                         )
                     )
                 triggerable = [hit for hit in recognized if can_trigger(hit.match, settings.match_threshold)]

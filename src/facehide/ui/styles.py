@@ -211,6 +211,14 @@ QPlainTextEdit {
     font-size: 12px;
     color: #c5cede;
 }
+QPlainTextEdit#NotifyPreview {
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-size: 13px;
+    color: #d7e6ff;
+    background: #0c1118;
+    padding: 10px 12px;
+    min-height: 86px;
+}
 QSlider::groove:horizontal {
     height: 6px;
     background: #243044;
@@ -260,6 +268,9 @@ QCheckBox::indicator:disabled {
 QRadioButton {
     spacing: 8px;
     background: transparent;
+}
+QRadioButton:disabled {
+    color: #6d7687;
 }
 QRadioButton::indicator {
     width: 16px;

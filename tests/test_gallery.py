@@ -133,6 +133,24 @@ class GalleryTests(unittest.TestCase):
             gallery.merge_people(other.id, person.id)
             self.assertTrue(gallery.person(other.id).blacklisted)
 
+    def test_nickname_persists_and_merge_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gallery = Gallery(root / "gallery.json", root)
+            person = gallery.add_person("同事", np.ones(8, dtype=np.float32), _thumb())
+            self.assertEqual(person.nickname, "")
+            gallery.set_nickname(person.id, "  老板  ")
+            self.assertEqual(gallery.person(person.id).nickname, "老板")
+            again = Gallery(root / "gallery.json", root)
+            self.assertEqual(again.people()[0].nickname, "老板")
+            other = gallery.add_person("路人", np.zeros(8, dtype=np.float32), _thumb())
+            gallery.merge_people(other.id, person.id)
+            self.assertEqual(gallery.person(other.id).nickname, "老板")
+            gallery.add_sample(other.id, np.ones(8, dtype=np.float32), _thumb())
+            split = gallery.split_sample(other.id, gallery.person(other.id).samples[1].id, "拆出")
+            self.assertEqual(split.nickname, "")
+            self.assertEqual(gallery.person(other.id).nickname, "老板")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from facehide.config import MessageChannel
+from facehide.config import MessageChannel, NOTIFY_NAME_MODES, NOTIFY_TEMPLATES
 from facehide.i18n import t
 
 JsonFn = Callable[..., tuple[int, str]]
@@ -28,17 +28,127 @@ class NotifyEvent:
     score: float
     when: datetime
     test: bool = False
+    nickname: str = ""
+    template: str = "classic"
+    name_mode: str = "full"
+
+
+_TITLE_KEYS = {
+    "classic": ("notify.test_title", "notify.alert_title"),
+    "playful": ("notify.playful.test_title", "notify.playful.alert_title"),
+    "privacy": ("notify.privacy.test_title", "notify.privacy.alert_title"),
+}
+_BODY_KEYS = {
+    "classic": "notify.body",
+    "playful": "notify.playful.body",
+    "privacy": "notify.privacy.body",
+}
 
 
 def format_when(when: datetime) -> str:
     return when.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def normalize_template(value: str | None) -> str:
+    raw = str(value or "classic").strip().lower()
+    return raw if raw in NOTIFY_TEMPLATES else "classic"
+
+
+def normalize_name_mode(value: str | None) -> str:
+    raw = str(value or "full").strip().lower()
+    return raw if raw in NOTIFY_NAME_MODES else "full"
+
+
+def _is_cjk(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3040 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+    )
+
+
+def initials(name: str) -> str:
+    text = " ".join((name or "").split())
+    if not text:
+        return "?"
+    parts = [part for part in text.split(" ") if part]
+    latin = all(part[:1].isalpha() and not _is_cjk(part[0]) for part in parts)
+    if len(parts) >= 2 and latin:
+        return ".".join(part[0].upper() for part in parts) + "."
+    first = text[0]
+    if _is_cjk(first):
+        return first + "*"
+    if first.isalpha():
+        return first.upper() + "."
+    return first + "*"
+
+
+def display_name(
+    name: str,
+    nickname: str = "",
+    mode: str = "full",
+    template: str = "classic",
+) -> str:
+    template = normalize_template(template)
+    mode = normalize_name_mode(mode)
+    if template == "privacy" and mode == "full":
+        mode = "nickname" if (nickname or "").strip() else "initial"
+    if mode == "nickname":
+        nick = (nickname or "").strip()
+        return nick if nick else initials(name)
+    if mode == "initial":
+        return initials(name)
+    text = (name or "").strip()
+    return text if text else "?"
+
+
+def public_person(event: NotifyEvent) -> str:
+    return display_name(
+        event.person,
+        nickname=event.nickname,
+        mode=event.name_mode,
+        template=event.template,
+    )
+
+
 def render_text(event: NotifyEvent, keyword: str = "") -> str:
-    title = t("notify.test_title") if event.test else t("notify.alert_title", name=event.person)
-    body = t("notify.body", time=format_when(event.when), score=event.score)
+    template = normalize_template(event.template)
+    name = public_person(event)
+    test_key, alert_key = _TITLE_KEYS[template]
+    title = t(test_key) if event.test else t(alert_key, name=name)
+    body = t(
+        _BODY_KEYS[template],
+        time=format_when(event.when),
+        score=event.score,
+        name=name,
+    )
     parts = [keyword.strip(), title, body]
     return "\n".join(part for part in parts if part)
+
+
+def preview_text(
+    name: str,
+    *,
+    nickname: str = "",
+    template: str = "classic",
+    name_mode: str = "full",
+    score: float = 0.86,
+    when: datetime | None = None,
+    test: bool = False,
+    keyword: str = "",
+) -> str:
+    event = NotifyEvent(
+        person=name,
+        score=score,
+        when=when or datetime.now(),
+        test=test,
+        nickname=nickname,
+        template=template,
+        name_mode=name_mode,
+    )
+    return render_text(event, keyword)
 
 
 def dingtalk_sign(secret: str, timestamp: str) -> str:
@@ -55,7 +165,7 @@ def feishu_sign(secret: str, timestamp: str) -> str:
 
 def apply_vars(text: str, event: NotifyEvent, message: str) -> str:
     return (
-        text.replace("{person}", event.person)
+        text.replace("{person}", public_person(event))
         .replace("{score}", f"{event.score:.2f}")
         .replace("{time}", format_when(event.when))
         .replace("{message}", message)
@@ -191,7 +301,7 @@ def send_webhook(channel: MessageChannel, event: NotifyEvent, http: JsonFn) -> s
     message = render_text(event)
     payload: dict[str, Any] = {
         "event": "blacklist_test" if event.test else "blacklist",
-        "person": event.person,
+        "person": public_person(event),
         "score": round(event.score, 4),
         "time": format_when(event.when),
         "message": message,

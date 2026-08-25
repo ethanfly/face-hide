@@ -34,6 +34,7 @@ class Person:
     samples: list[Sample] = field(default_factory=list)
     enabled: bool = True
     blacklisted: bool = False
+    nickname: str = ""
 
     @property
     def auto_linked(self) -> bool:
@@ -211,6 +212,14 @@ class Gallery:
             person.blacklisted = bool(blacklisted)
             self._save()
 
+    def set_nickname(self, person_id: str, nickname: str) -> None:
+        with self._lock:
+            person = self._find(person_id)
+            if person is None:
+                raise KeyError(person_id)
+            person.nickname = nickname.strip()
+            self._save()
+
     def merge_people(self, keep_id: str, absorb_id: str) -> Person:
         if keep_id == absorb_id:
             person = self.person(keep_id)
@@ -226,6 +235,8 @@ class Gallery:
                 raise KeyError(absorb_id)
             keep.samples.extend(absorb.samples)
             keep.blacklisted = keep.blacklisted or absorb.blacklisted
+            if not keep.nickname.strip() and absorb.nickname.strip():
+                keep.nickname = absorb.nickname
             self._people = [item for item in self._people if item.id != absorb_id]
             self._save()
             return keep
@@ -334,6 +345,7 @@ class Gallery:
             name=str(item.get("name") or "未命名"),
             enabled=bool(item.get("enabled", True)),
             blacklisted=bool(item.get("blacklisted", False)),
+            nickname=str(item.get("nickname") or "").strip(),
         )
         for sample_raw in item.get("samples") or []:
             if not isinstance(sample_raw, dict):
@@ -365,6 +377,7 @@ class Gallery:
                     "name": person.name,
                     "enabled": person.enabled,
                     "blacklisted": person.blacklisted,
+                    "nickname": person.nickname,
                     "samples": [
                         {
                             "id": sample.id,
