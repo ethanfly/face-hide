@@ -113,7 +113,7 @@ class FaceEngine:
         people: list[Person],
         threshold: float,
     ) -> list[FaceHit]:
-        hits = self.detect(bgr, extract_features=bool(people))
+        hits = self.detect(bgr, extract_features=True)
         if not people:
             return hits
         for hit in hits:

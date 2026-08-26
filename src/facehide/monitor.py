@@ -11,8 +11,8 @@ from PySide6.QtCore import QThread, Signal
 from facehide.actions import perform_switch
 from facehide.camera import open_camera, read_bgr
 from facehide.config import SettingsStore
-from facehide.engine import FaceEngine, FaceHit
-from facehide.gallery import Gallery, can_trigger
+from facehide.engine import FaceEngine, FaceHit, NoFaceError, crop_face
+from facehide.gallery import Gallery, Person, best_match, can_trigger, cosine_similarity
 from facehide.i18n import t
 
 
@@ -61,6 +61,39 @@ def track_seen(
     return next_active, newly
 
 
+def enroll_unknown_faces(
+    gallery: Gallery,
+    frame: np.ndarray,
+    hits: list[FaceHit],
+    *,
+    threshold: float,
+    recent: list[tuple[float, np.ndarray]],
+    now: float,
+    grace: float = 30.0,
+) -> list[Person]:
+    kept = [(stamp, feature) for stamp, feature in recent if now - stamp <= grace]
+    people = gallery.people()
+    enrolled: list[Person] = []
+    for hit in hits:
+        if hit.feature is None:
+            continue
+        if best_match(hit.feature, people, threshold) is not None:
+            continue
+        feature = np.asarray(hit.feature, dtype=np.float32).reshape(-1)
+        if any(cosine_similarity(feature, other) >= threshold for _stamp, other in kept):
+            continue
+        try:
+            thumb = crop_face(frame, hit)
+        except NoFaceError:
+            continue
+        name = t("faces.auto_unnamed", index=len(people) + len(enrolled) + 1)
+        person = gallery.add_person(name, feature, thumb, enabled=False)
+        kept.append((now, feature))
+        enrolled.append(person)
+    recent[:] = kept
+    return enrolled
+
+
 @dataclass
 class TriggerEvent:
     person_name: str
@@ -74,6 +107,7 @@ class MonitorThread(QThread):
     frame_ready = Signal(object)
     triggered = Signal(object)
     status = Signal(str)
+    faces_changed = Signal()
 
     def __init__(
         self,
@@ -113,6 +147,7 @@ class MonitorThread(QThread):
         cooldown_until = 0.0
         last = time.perf_counter()
         fps = 0.0
+        recent_unknown: list[tuple[float, np.ndarray]] = []
         try:
             while not self._stop:
                 settings = self._store.get()
@@ -176,6 +211,20 @@ class MonitorThread(QThread):
                         )
                     )
                 triggerable = [hit for hit in recognized if can_trigger(hit.match, settings.match_threshold)]
+                if settings.auto_enroll_unknown:
+                    created = enroll_unknown_faces(
+                        self._gallery,
+                        frame,
+                        hits,
+                        threshold=settings.match_threshold,
+                        recent=recent_unknown,
+                        now=time.monotonic(),
+                    )
+                    if created:
+                        self.status.emit(
+                            t("log.auto_enrolled", count=len(created), name=", ".join(item.name for item in created))
+                        )
+                        self.faces_changed.emit()
                 best_score = max((hit.match.score for hit in hits if hit.match), default=-1.0)
                 if recognized:
                     shown = max(recognized, key=lambda hit: hit.match.score if hit.match else -1)

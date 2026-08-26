@@ -592,6 +592,7 @@ class MainWindow(QMainWindow):
         self.monitor.frame_ready.connect(self._on_frame)
         self.monitor.triggered.connect(self._on_triggered)
         self.monitor.status.connect(self._log)
+        self.monitor.faces_changed.connect(self._reload_faces)
         self._apply_language()
         QTimer.singleShot(200, self._boot_cameras)
         self.reload_all()
@@ -1135,6 +1136,9 @@ class MainWindow(QMainWindow):
         self.chk_autolink = QCheckBox()
         self.chk_autolink.stateChanged.connect(self._save_from_ui)
         form.addWidget(self.chk_autolink)
+        self.chk_auto_enroll = QCheckBox()
+        self.chk_auto_enroll.stateChanged.connect(self._save_from_ui)
+        form.addWidget(self.chk_auto_enroll)
         self.chk_dev = QCheckBox()
         self.chk_dev.stateChanged.connect(self._save_from_ui)
         form.addWidget(self.chk_dev)
@@ -1239,6 +1243,7 @@ class MainWindow(QMainWindow):
         self.set_title.setText(t("settings.title"))
         self.set_camera_label.setText(t("settings.camera"))
         self.chk_autolink.setText(t("settings.autolink"))
+        self.chk_auto_enroll.setText(t("settings.auto_enroll"))
         self.chk_autostart.setText(t("settings.autostart"))
         self.chk_start_min.setText(t("settings.start_minimized"))
         self.chk_boot.setText(t("settings.start_on_boot"))
@@ -1277,6 +1282,7 @@ class MainWindow(QMainWindow):
         self.chk_boot.setChecked(settings.start_on_boot)
         self.chk_dev.setChecked(settings.dev_mode)
         self.chk_autolink.setChecked(settings.auto_link_same_person)
+        self.chk_auto_enroll.setChecked(settings.auto_enroll_unknown)
         self._apply_dev_chrome(settings)
         self.chk_foreground.setChecked(settings.hide_foreground)
         self.chk_others.setChecked(settings.minimize_other_windows)
@@ -1307,6 +1313,7 @@ class MainWindow(QMainWindow):
         settings.start_on_boot = self.chk_boot.isChecked()
         settings.dev_mode = self.chk_dev.isChecked()
         settings.auto_link_same_person = self.chk_autolink.isChecked()
+        settings.auto_enroll_unknown = self.chk_auto_enroll.isChecked()
         settings.hide_foreground = self.chk_foreground.isChecked()
         settings.minimize_other_windows = self.chk_others.isChecked()
         settings.break_fullscreen = self.chk_fullscreen.isChecked()
@@ -1710,7 +1717,7 @@ class MainWindow(QMainWindow):
         if self._armed:
             self.stop_monitor()
         else:
-            if not self.gallery.people():
+            if not self.gallery.people() and not self.store.get().auto_enroll_unknown:
                 QMessageBox.information(self, t("app.name"), t("msg.need_face"))
                 self._goto(1)
                 return

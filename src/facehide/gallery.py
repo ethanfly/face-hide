@@ -164,9 +164,10 @@ class Gallery:
         feature: np.ndarray,
         thumb_bgr: np.ndarray,
         source: str = "enroll",
+        enabled: bool = True,
     ) -> Person:
         name = name.strip() or "未命名"
-        person = Person(id=new_id(), name=name)
+        person = Person(id=new_id(), name=name, enabled=enabled)
         with self._lock:
             self._people.append(person)
             self._add_sample_unlocked(person, feature, thumb_bgr, source)

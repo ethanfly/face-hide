@@ -68,6 +68,7 @@ class Settings:
     start_on_boot: bool = False
     dev_mode: bool = False
     auto_link_same_person: bool = True
+    auto_enroll_unknown: bool = True
     language: str = "zh"
     notify_template: str = "classic"
     notify_name_mode: str = "full"
@@ -176,6 +177,7 @@ def settings_from_dict(data: dict[str, Any]) -> Settings:
         start_on_boot=bool(data.get("start_on_boot", False)),
         dev_mode=bool(data.get("dev_mode", False)),
         auto_link_same_person=bool(data.get("auto_link_same_person", True)),
+        auto_enroll_unknown=bool(data.get("auto_enroll_unknown", True)),
         language=normalize_language(data.get("language", "zh")),
         notify_template=template,
         notify_name_mode=name_mode,

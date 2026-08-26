@@ -57,6 +57,13 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(load_settings(path).dev_mode)
             self.assertFalse(settings_from_dict({}).dev_mode)
 
+    def test_auto_enroll_unknown_default_and_roundtrip(self) -> None:
+        self.assertTrue(settings_from_dict({}).auto_enroll_unknown)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_settings(Settings(auto_enroll_unknown=False), path)
+            self.assertFalse(load_settings(path).auto_enroll_unknown)
+
     def test_auto_link_defaults_on(self) -> None:
         self.assertTrue(settings_from_dict({}).auto_link_same_person)
         with tempfile.TemporaryDirectory() as tmp:
