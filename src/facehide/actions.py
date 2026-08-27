@@ -13,7 +13,9 @@ from facehide.config import Settings, WorkApp
 from facehide.i18n import t
 
 VK_LWIN = 0x5B
-VK_ESCAPE = 0x1B
+VK_MENU = 0x12
+VK_RETURN = 0x0D
+VK_M = 0x4D
 KEYEVENTF_KEYUP = 0x0002
 
 
@@ -263,18 +265,80 @@ def plan_switch(
     )
 
 
-def _tap(vk: int) -> None:
+def _hold_chord(modifier: int, key: int) -> None:
+    """按下修饰键不放再敲目标键：修饰键被当作组合键，shell 不会触发单键行为。"""
     import ctypes
 
     user32 = ctypes.windll.user32
-    user32.keybd_event(vk, 0, 0, 0)
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(modifier, 0, 0, 0)
+    time.sleep(0.03)
+    user32.keybd_event(key, 0, 0, 0)
+    user32.keybd_event(key, 0, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.03)
+    user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
+
+
+def _fullscreen_suspect() -> int:
+    """前台窗口铺满整个显示器且不是普通最大化时，返回其 hwnd，否则 0。"""
+    try:
+        import ctypes
+
+        import win32con
+        import win32gui
+
+        hwnd = int(win32gui.GetForegroundWindow() or 0)
+        if not hwnd:
+            return 0
+        style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+        if style & win32con.WS_MAXIMIZE:
+            return 0
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        user32 = ctypes.windll.user32
+        monitor = user32.MonitorFromWindow(hwnd, 1)  # MONITOR_DEFAULTTONEAREST
+        if not monitor:
+            return 0
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", ctypes.c_ulong),
+            ]
+
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(ctypes.c_void_p(monitor), ctypes.byref(info)):
+            return 0
+        area = info.rcMonitor
+        # 允许 8px 以内的边框外溢（无边框窗口常有），但必须整体盖住屏幕
+        pad = 8
+        covers = (
+            left <= area.left + pad
+            and top <= area.top + pad
+            and right >= area.right - pad
+            and bottom >= area.bottom - pad
+        )
+        return hwnd if covers else 0
+    except Exception:
+        return 0
 
 
 def break_exclusive_fullscreen() -> None:
-    _tap(VK_LWIN)
-    time.sleep(0.12)
-    _tap(VK_ESCAPE)
+    # 不再模拟 Win 单键（会弹开始菜单）。对疑似独占全屏的前台窗口发
+    # Alt+Enter（游戏通用的全屏开关，走应用自己的快捷键，不经过 shell），
+    # 让它先退回窗口化，随后 execute_plan 再正常最小化即可。
+    if not _fullscreen_suspect():
+        return
+    _hold_chord(VK_MENU, VK_RETURN)
     time.sleep(0.08)
 
 
@@ -318,13 +382,7 @@ def restore_and_focus(hwnd: int) -> None:
 
 
 def show_desktop() -> None:
-    import ctypes
-
-    user32 = ctypes.windll.user32
-    user32.keybd_event(VK_LWIN, 0, 0, 0)
-    user32.keybd_event(0x4D, 0, 0, 0)
-    user32.keybd_event(0x4D, 0, KEYEVENTF_KEYUP, 0)
-    user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
+    _hold_chord(VK_LWIN, VK_M)
 
 
 def launch_app(app: WorkApp) -> str:
