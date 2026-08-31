@@ -1,13 +1,26 @@
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from facehide.engine import FaceHit
+from facehide.config import Settings
+from facehide.engine import DETECT_MAX_SIDE, FaceHit
 from facehide.gallery import Gallery
 from facehide.i18n import set_language
-from facehide.monitor import SeenFace, enroll_unknown_faces, track_seen
+from facehide.monitor import (
+    MonitorThread,
+    SeenFace,
+    enroll_unknown_faces,
+    plan_tick,
+    preview_needed,
+    preview_rgb,
+    remaining_sleep_ms,
+    should_build_preview_rgb,
+    tick_sleep_ms,
+    track_seen,
+)
 
 
 class TrackSeenTests(unittest.TestCase):
@@ -122,6 +135,107 @@ class AutoEnrollUnknownTests(unittest.TestCase):
                 now=1.0,
             )
             self.assertEqual([item.name for item in created], ["未知人脸 1", "未知人脸 2"])
+
+
+class TickHelperTests(unittest.TestCase):
+    def test_hidden_tick_skips_full_size_rgb(self) -> None:
+        src = np.zeros((720, 1280, 3), dtype=np.uint8)
+        src[:, :] = (20, 80, 160)
+        hidden = preview_rgb(src, preview_needed(False))
+        shown = preview_rgb(src, preview_needed(True))
+        self.assertEqual(hidden.size, 0)
+        self.assertLess(hidden.size, src.size)
+        self.assertEqual(shown.shape, (720, 1280, 3))
+        self.assertGreater(shown.size, hidden.size)
+        extra = preview_rgb(src, preview_needed(False, extra=1))
+        self.assertEqual(extra.shape[:2], src.shape[:2])
+        dropped = preview_rgb(src, should_build_preview_rgb(True, True))
+        self.assertEqual(dropped.size, 0)
+        inflight = preview_rgb(src, should_build_preview_rgb(True, False))
+        self.assertEqual(inflight.shape[:2], src.shape[:2])
+        self.assertFalse(should_build_preview_rgb(False, False))
+
+    def test_success_path_interval_is_positive_and_hidden_stays_near_a_second(self) -> None:
+        hidden = plan_tick(False)
+        visible = plan_tick(True)
+        self.assertGreater(hidden.sleep_ms, 0)
+        self.assertGreater(visible.sleep_ms, 0)
+        self.assertGreater(tick_sleep_ms(False), 0)
+        self.assertLessEqual(hidden.sleep_ms, 1000)
+        confirm = Settings().confirm_frames
+        self.assertLessEqual(confirm * hidden.sleep_ms, 1000)
+        self.assertGreater(hidden.sleep_ms, visible.sleep_ms)
+        leftover = remaining_sleep_ms(hidden.sleep_ms, 0.0)
+        self.assertGreater(leftover, 0)
+        self.assertEqual(remaining_sleep_ms(hidden.sleep_ms, hidden.sleep_ms / 1000.0 + 1.0), 0)
+
+    def test_plan_uses_downscaled_detect_side(self) -> None:
+        plan = plan_tick(False)
+        src_w, src_h = 1280, 720
+        self.assertLess(plan.detect_max_side * plan.detect_max_side, src_w * src_h)
+        self.assertEqual(plan.detect_max_side, DETECT_MAX_SIDE)
+        self.assertLessEqual(plan.detect_max_side, 320)
+
+    def test_run_loop_calls_shipped_tick_helpers(self) -> None:
+        source = inspect.getsource(MonitorThread.run)
+        self.assertIn("plan_tick", source)
+        self.assertIn("preview_rgb", source)
+        self.assertIn("should_build_preview_rgb", source)
+        self.assertIn("remaining_sleep_ms", source)
+        self.assertIn("loop_settings", source)
+        self.assertIn("detect_max_side", source)
+        self.assertIn("extract_features", source)
+        self.assertNotIn("cvtColor", source)
+        self.assertIn("match_threshold", source)
+        self.assertIn("confirm_frames", source)
+        self.assertIn("auto_enroll_unknown", source)
+        self.assertIn("dev_mode", source)
+        self.assertIn("cooldown_seconds", source)
+        self.assertIn("perform_switch", source)
+        self.assertIn("dry_run", source)
+
+
+class PreviewUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_hidden_payload_does_not_render_pixmap(self) -> None:
+        from facehide.monitor import PreviewFrame
+        from facehide.ui.main_window import CaptureDialog, MainWindow, _render_preview
+
+        src = np.zeros((720, 1280, 3), dtype=np.uint8)
+        hidden = PreviewFrame(
+            rgb=preview_rgb(src, preview_needed(False)),
+            hits=[],
+            fps=12.0,
+            streak=0,
+            matched_name=None,
+            camera_ok=True,
+        )
+        shown = PreviewFrame(
+            rgb=preview_rgb(src, preview_needed(True)),
+            hits=[],
+            fps=12.0,
+            streak=0,
+            matched_name=None,
+            camera_ok=True,
+        )
+        hidden_pix = _render_preview(hidden)
+        shown_pix = _render_preview(shown)
+        self.assertTrue(hidden_pix.isNull())
+        self.assertFalse(shown_pix.isNull())
+        self.assertEqual((shown_pix.width(), shown_pix.height()), (1280, 720))
+        sync = inspect.getsource(MainWindow._sync_preview_needed)
+        self.assertIn("set_preview_needed", sync)
+        self.assertIn("isMinimized", sync)
+        on_frame = inspect.getsource(MainWindow._on_frame)
+        self.assertIn("_flush_preview", on_frame)
+        self.assertIn("_update_pills", on_frame)
+        self.assertIn("add_preview_extra", inspect.getsource(CaptureDialog.__init__))
+        self.assertIn("remove_preview_extra", inspect.getsource(CaptureDialog.done))
 
 
 if __name__ == "__main__":

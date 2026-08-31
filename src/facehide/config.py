@@ -80,6 +80,19 @@ class Settings:
         return copy.deepcopy(self)
 
 
+@dataclass(frozen=True)
+class LoopSettings:
+    camera_index: int
+    frame_width: int
+    frame_height: int
+    detect_score: float
+    match_threshold: float
+    confirm_frames: int
+    cooldown_seconds: float
+    auto_enroll_unknown: bool
+    dev_mode: bool
+
+
 def _pairs_from(raw: Any) -> list[KvPair]:
     pairs: list[KvPair] = []
     for item in raw or []:
@@ -222,6 +235,21 @@ class SettingsStore:
     def get(self) -> Settings:
         with self._lock:
             return self._settings.copy()
+
+    def loop_settings(self) -> LoopSettings:
+        with self._lock:
+            s = self._settings
+            return LoopSettings(
+                camera_index=s.camera_index,
+                frame_width=s.frame_width,
+                frame_height=s.frame_height,
+                detect_score=s.detect_score,
+                match_threshold=s.match_threshold,
+                confirm_frames=s.confirm_frames,
+                cooldown_seconds=s.cooldown_seconds,
+                auto_enroll_unknown=s.auto_enroll_unknown,
+                dev_mode=s.dev_mode,
+            )
 
     def replace(self, settings: Settings) -> Settings:
         with self._lock:

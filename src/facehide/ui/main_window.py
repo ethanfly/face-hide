@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QCursor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QCursor, QFont, QHideEvent, QImage, QPainter, QPen, QPixmap, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -154,6 +154,8 @@ def _ok_cancel(dialog: QDialog) -> QDialogButtonBox:
 
 
 def _render_preview(frame: PreviewFrame, *, hud: bool = True) -> QPixmap:
+    if frame.rgb is None or frame.rgb.size == 0:
+        return QPixmap()
     canvas = cv2.flip(frame.rgb, 1)
     pixmap = _pixmap_from_rgb(canvas)
     painter = QPainter(pixmap)
@@ -468,6 +470,7 @@ class CaptureDialog(QDialog):
         row.addWidget(self._btn_cancel)
         row.addWidget(self._btn_shot)
         layout.addLayout(row)
+        self._monitor.add_preview_extra()
         self._monitor.frame_ready.connect(self._on_frame)
 
     def captured_bgr(self) -> np.ndarray | None:
@@ -484,14 +487,18 @@ class CaptureDialog(QDialog):
 
     def _on_frame(self, frame: PreviewFrame) -> None:
         if self._frozen:
+            self._monitor.ack_preview()
             return
         self._latest_bgr = self._monitor.latest_bgr()
         if not frame.camera_ok:
             self._preview.setText(frame.message or t("capture.no_cam"))
             self._status.setText(t("capture.cam_bad"))
             self._btn_shot.setEnabled(False)
+            self._monitor.ack_preview()
             return
-        self._show_pixmap(_render_preview(frame, hud=False))
+        if frame.rgb.size:
+            self._show_pixmap(_render_preview(frame, hud=False))
+        self._monitor.ack_preview()
         count = len(frame.hits)
         self._status.setText(t("capture.faces", count=count) if count else t("capture.no_face"))
         self._btn_shot.setEnabled(self._latest_bgr is not None)
@@ -533,6 +540,7 @@ class CaptureDialog(QDialog):
             self._monitor.frame_ready.disconnect(self._on_frame)
         except RuntimeError:
             pass
+        self._monitor.remove_preview_extra()
         super().done(result)
 
 
@@ -554,6 +562,8 @@ class MainWindow(QMainWindow):
         self._seen_active: dict[str, float] = {}
         self._notify_until: dict[str, float] = {}
         self._log_records: list[LogRecord] = []
+        self._pending_preview: PreviewFrame | None = None
+        self._flush_queued = False
         self._notify_worker = _NotifyWorker(self)
         self._notify_worker.done.connect(self._log)
         self.setWindowIcon(app_icon())
@@ -1687,7 +1697,11 @@ class MainWindow(QMainWindow):
         if self.store.get().auto_start_monitor and self.gallery.people():
             self.start_monitor()
 
+    def _sync_preview_needed(self) -> None:
+        self.monitor.set_preview_needed(self.isVisible() and not self.isMinimized())
+
     def _start_preview(self) -> None:
+        self._sync_preview_needed()
         if not self.monitor.isRunning():
             self.monitor.start()
 
@@ -1726,11 +1740,35 @@ class MainWindow(QMainWindow):
     def _on_frame(self, frame: PreviewFrame) -> None:
         if not frame.camera_ok:
             self.preview.setText(frame.message)
+            self.monitor.ack_preview()
             return
-        pix = _render_preview(frame)
-        self.preview.setPixmap(
-            pix.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        )
+        if frame.rgb.size and self.isVisible() and not self.isMinimized():
+            self._pending_preview = frame
+            if not self._flush_queued:
+                self._flush_queued = True
+                QTimer.singleShot(0, self._flush_preview)
+        elif frame.rgb.size:
+            self.monitor.ack_preview()
+        self._update_pills(frame)
+        self._log_seen_faces(frame.seen)
+
+    def _flush_preview(self) -> None:
+        self._flush_queued = False
+        frame = self._pending_preview
+        self._pending_preview = None
+        try:
+            if frame is None or not frame.rgb.size or not self.isVisible() or self.isMinimized():
+                return
+            pix = _render_preview(frame)
+            if pix.isNull():
+                return
+            self.preview.setPixmap(
+                pix.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            )
+        finally:
+            self.monitor.ack_preview()
+
+    def _update_pills(self, frame: PreviewFrame) -> None:
         self.pill_fps.setText(t("pill.fps", fps=frame.fps))
         self.pill_faces.setText(t("pill.faces", count=len(frame.hits)))
         if frame.matched_name:
@@ -1745,7 +1783,6 @@ class MainWindow(QMainWindow):
             self.pill_match.setProperty("state", "")
         self.pill_match.style().unpolish(self.pill_match)
         self.pill_match.style().polish(self.pill_match)
-        self._log_seen_faces(frame.seen)
 
     def _log_seen_faces(self, seen: list[SeenFace]) -> None:
         present: dict[str, SeenFace] = {}
@@ -2150,6 +2187,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._log(t("log.sim_fail", error=exc))
 
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._sync_preview_needed()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        self._sync_preview_needed()
+
     def reveal(self) -> None:
         self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.showNormal()
@@ -2184,6 +2229,8 @@ class MainWindow(QMainWindow):
         ):
             QTimer.singleShot(0, self._hide_to_tray)
         super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_preview_needed()
 
     def request_quit(self) -> None:
         self._allow_quit = True

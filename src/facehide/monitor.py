@@ -11,9 +11,55 @@ from PySide6.QtCore import QThread, Signal
 from facehide.actions import perform_switch
 from facehide.camera import open_camera, read_bgr
 from facehide.config import SettingsStore
-from facehide.engine import FaceEngine, FaceHit, NoFaceError, crop_face
+from facehide.engine import DETECT_MAX_SIDE, FaceEngine, FaceHit, NoFaceError, crop_face
 from facehide.gallery import Gallery, Person, best_match, can_trigger, cosine_similarity
 from facehide.i18n import t
+
+VISIBLE_TICK_MS = 50
+HIDDEN_TICK_MS = 200
+
+
+def preview_needed(window_shown: bool, extra: int = 0) -> bool:
+    return bool(window_shown) or extra > 0
+
+
+def should_build_preview_rgb(need_preview: bool, in_flight: bool) -> bool:
+    return bool(need_preview) and not in_flight
+
+
+def tick_sleep_ms(need_preview: bool) -> int:
+    return VISIBLE_TICK_MS if need_preview else HIDDEN_TICK_MS
+
+
+def remaining_sleep_ms(interval_ms: int, elapsed_s: float) -> int:
+    left = int(interval_ms - elapsed_s * 1000.0)
+    return left if left > 0 else 0
+
+
+def empty_preview_rgb() -> np.ndarray:
+    return np.empty((0, 0, 3), dtype=np.uint8)
+
+
+def preview_rgb(bgr: np.ndarray | None, need_preview: bool) -> np.ndarray:
+    if not need_preview or bgr is None or bgr.size == 0:
+        return empty_preview_rgb()
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+@dataclass(frozen=True)
+class TickPlan:
+    need_preview: bool
+    sleep_ms: int
+    detect_max_side: int
+
+
+def plan_tick(window_shown: bool, extra_preview: int = 0) -> TickPlan:
+    need = preview_needed(window_shown, extra_preview)
+    return TickPlan(
+        need_preview=need,
+        sleep_ms=tick_sleep_ms(need),
+        detect_max_side=DETECT_MAX_SIDE,
+    )
 
 
 @dataclass(frozen=True)
@@ -124,9 +170,25 @@ class MonitorThread(QThread):
         self._stop = False
         self._latest_bgr: np.ndarray | None = None
         self._protected_hwnds: set[int] = set()
+        self._preview_needed = False
+        self._preview_extra = 0
+        self._preview_in_flight = False
 
     def set_armed(self, armed: bool) -> None:
         self._armed = bool(armed)
+
+    def set_preview_needed(self, needed: bool) -> None:
+        self._preview_needed = bool(needed)
+
+    def add_preview_extra(self) -> None:
+        self._preview_extra += 1
+
+    def remove_preview_extra(self) -> None:
+        if self._preview_extra > 0:
+            self._preview_extra -= 1
+
+    def ack_preview(self) -> None:
+        self._preview_in_flight = False
 
     def set_protected_hwnds(self, hwnds: set[int]) -> None:
         self._protected_hwnds = set(hwnds)
@@ -150,30 +212,31 @@ class MonitorThread(QThread):
         recent_unknown: list[tuple[float, np.ndarray]] = []
         try:
             while not self._stop:
-                settings = self._store.get()
+                loop = self._store.loop_settings()
+                plan = plan_tick(self._preview_needed, self._preview_extra)
                 need_reopen = (
                     cap is None
                     or not cap.isOpened()
-                    or opened_index != settings.camera_index
+                    or opened_index != loop.camera_index
                 )
                 if need_reopen:
                     if cap is not None:
                         cap.release()
-                    cap = open_camera(settings.camera_index, settings.frame_width, settings.frame_height)
-                    opened_index = settings.camera_index
+                    cap = open_camera(loop.camera_index, loop.frame_width, loop.frame_height)
+                    opened_index = loop.camera_index
                     if not cap.isOpened():
                         self.frame_ready.emit(
                             PreviewFrame(
-                                rgb=np.zeros((360, 640, 3), dtype=np.uint8),
+                                rgb=preview_rgb(None, False),
                                 hits=[],
                                 fps=0.0,
                                 streak=0,
                                 matched_name=None,
                                 camera_ok=False,
                                 message=t("preview.cam_fail"),
-                                camera_index=settings.camera_index,
-                                threshold=settings.match_threshold,
-                                dev_mode=settings.dev_mode,
+                                camera_index=loop.camera_index,
+                                threshold=loop.match_threshold,
+                                dev_mode=loop.dev_mode,
                             )
                         )
                         self.status.emit(t("log.cam_unavailable"))
@@ -188,15 +251,23 @@ class MonitorThread(QThread):
                 if frame is None:
                     self.msleep(30)
                     continue
+                tick_started = time.perf_counter()
                 self._latest_bgr = frame
                 people = self._gallery.people()
-                self._engine.detect_score = settings.detect_score
-                preview_threshold = -1.0 if settings.dev_mode and people else settings.match_threshold
-                hits = self._engine.annotate(frame, people, preview_threshold)
+                self._engine.detect_score = loop.detect_score
+                preview_threshold = -1.0 if loop.dev_mode and people else loop.match_threshold
+                extract_features = bool(people) or loop.auto_enroll_unknown
+                hits = self._engine.annotate(
+                    frame,
+                    people,
+                    preview_threshold,
+                    max_side=plan.detect_max_side,
+                    extract_features=extract_features,
+                )
                 recognized = [
                     hit
                     for hit in hits
-                    if hit.match is not None and hit.match.score >= settings.match_threshold
+                    if hit.match is not None and hit.match.score >= loop.match_threshold
                 ]
                 seen: list[SeenFace] = []
                 for hit in recognized:
@@ -210,13 +281,13 @@ class MonitorThread(QThread):
                             nickname=hit.match.person.nickname,
                         )
                     )
-                triggerable = [hit for hit in recognized if can_trigger(hit.match, settings.match_threshold)]
-                if settings.auto_enroll_unknown:
+                triggerable = [hit for hit in recognized if can_trigger(hit.match, loop.match_threshold)]
+                if loop.auto_enroll_unknown:
                     created = enroll_unknown_faces(
                         self._gallery,
                         frame,
                         hits,
-                        threshold=settings.match_threshold,
+                        threshold=loop.match_threshold,
                         recent=recent_unknown,
                         now=time.monotonic(),
                     )
@@ -241,23 +312,24 @@ class MonitorThread(QThread):
                 if (
                     self._armed
                     and top is not None
-                    and streak >= settings.confirm_frames
+                    and streak >= loop.confirm_frames
                     and time.monotonic() >= cooldown_until
                 ):
                     assert top.match is not None
+                    settings = self._store.get()
                     try:
                         actions = perform_switch(
                             settings,
                             protected_hwnds=self._protected_hwnds,
                             protected_pids={os.getpid()},
-                            dry_run=settings.dev_mode,
+                            dry_run=loop.dev_mode,
                         )
                         self.triggered.emit(
                             TriggerEvent(
                                 person_name=top.match.person.name,
                                 score=top.match.score,
                                 actions=actions,
-                                dry_run=settings.dev_mode,
+                                dry_run=loop.dev_mode,
                             )
                         )
                     except Exception as exc:  # noqa: BLE001
@@ -268,7 +340,7 @@ class MonitorThread(QThread):
                                 error=str(exc),
                             )
                         )
-                    cooldown_until = time.monotonic() + settings.cooldown_seconds
+                    cooldown_until = time.monotonic() + loop.cooldown_seconds
                     streak = 0
 
                 now = time.perf_counter()
@@ -278,7 +350,10 @@ class MonitorThread(QThread):
                     inst = 1.0 / dt
                     fps = inst if fps == 0 else fps * 0.85 + inst * 0.15
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                build_rgb = should_build_preview_rgb(plan.need_preview, self._preview_in_flight)
+                rgb = preview_rgb(frame, build_rgb)
+                if build_rgb:
+                    self._preview_in_flight = True
                 self.frame_ready.emit(
                     PreviewFrame(
                         rgb=rgb,
@@ -287,14 +362,15 @@ class MonitorThread(QThread):
                         streak=streak,
                         matched_name=name,
                         camera_ok=True,
-                        camera_index=settings.camera_index,
-                        threshold=settings.match_threshold,
+                        camera_index=loop.camera_index,
+                        threshold=loop.match_threshold,
                         best_score=best_score,
-                        dev_mode=settings.dev_mode,
+                        dev_mode=loop.dev_mode,
                         matched_armed=bool(triggerable),
                         seen=seen,
                     )
                 )
+                self.msleep(remaining_sleep_ms(plan.sleep_ms, time.perf_counter() - tick_started))
         finally:
             if cap is not None:
                 cap.release()

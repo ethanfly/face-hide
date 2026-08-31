@@ -36,6 +36,23 @@ class ConfigTests(unittest.TestCase):
             loaded = load_settings(path)
             self.assertEqual(loaded.work_apps, [])
 
+    def test_loop_settings_avoids_deepcopy_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SettingsStore(Path(tmp) / "config.json")
+            loop = store.loop_settings()
+            copied = store.get()
+            copied.camera_index = 7
+            copied.match_threshold = 0.9
+            copied.work_apps.append(WorkApp(id="x", name="X", path=r"C:\x.exe"))
+            again = store.loop_settings()
+            self.assertEqual(again.camera_index, loop.camera_index)
+            self.assertAlmostEqual(again.match_threshold, loop.match_threshold)
+            self.assertEqual(store.get().work_apps, [])
+            store.replace(copied)
+            updated = store.loop_settings()
+            self.assertEqual(updated.camera_index, 7)
+            self.assertAlmostEqual(updated.match_threshold, 0.9)
+
     def test_store_copy_is_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = SettingsStore(Path(tmp) / "config.json")
