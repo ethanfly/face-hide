@@ -28,6 +28,18 @@ class StartupTests(unittest.TestCase):
         sync_startup(False, name=name)
         self.assertFalse(is_enabled(name))
 
+    def test_disable_when_run_key_missing(self) -> None:
+        def missing(*_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+
+        with patch("winreg.OpenKey", missing):
+            sync_startup(False, name="FaceHide.Missing")
+
+    def test_enable_creates_run_key(self) -> None:
+        source = __import__("inspect").getsource(sync_startup)
+        self.assertIn("CreateKeyEx", source)
+        self.assertIn("KEY_SET_VALUE", source)
+
 
 if __name__ == "__main__":
     unittest.main()

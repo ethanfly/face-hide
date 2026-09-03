@@ -31,11 +31,15 @@ def is_enabled(name: str = VALUE_NAME) -> bool:
 def sync_startup(enabled: bool, name: str = VALUE_NAME, command: str | None = None) -> None:
     import winreg
 
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        if enabled:
+    if enabled:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, name, 0, winreg.REG_SZ, command or launch_command())
-            return
-        try:
-            winreg.DeleteValue(key, name)
-        except FileNotFoundError:
-            pass
+        return
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            try:
+                winreg.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
+    except FileNotFoundError:
+        pass
