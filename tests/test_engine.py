@@ -12,14 +12,30 @@ from facehide.engine import (
     should_extract_features,
     working_view,
 )
+from facehide.infer.yunet import YUNET_OUTPUTS, empty_yunet_outputs
 from facehide.models import sface_path, yunet_path
+
+
+class _BoomDml:
+    def __init__(self) -> None:
+        self.n = 0
+        self.input_name = "input"
+        self.output_names = list(YUNET_OUTPUTS)
+
+    def run(self, names, feed):
+        if "data" in feed:
+            return [np.zeros((1, 128), dtype=np.float32)]
+        self.n += 1
+        if self.n == 2:
+            raise RuntimeError("dml boom")
+        return empty_yunet_outputs()
 
 
 class EngineTests(unittest.TestCase):
     def test_blank_image_has_no_faces(self) -> None:
         if not yunet_path().exists() or not sface_path().exists():
             self.skipTest("models not downloaded")
-        engine = FaceEngine()
+        engine = FaceEngine(device="cpu")
         hits = engine.detect(np.zeros((480, 640, 3), dtype=np.uint8))
         self.assertEqual(hits, [])
         self.assertEqual(engine.extract_count, 0)
@@ -29,7 +45,7 @@ class EngineTests(unittest.TestCase):
             self.skipTest("models not downloaded")
         from facehide.engine import NoFaceError
 
-        engine = FaceEngine()
+        engine = FaceEngine(device="cpu")
         with self.assertRaises(NoFaceError):
             engine.enroll(np.zeros((480, 640, 3), dtype=np.uint8))
 
@@ -115,7 +131,7 @@ class EngineTests(unittest.TestCase):
         self.assertIn("max_side", source)
         if not yunet_path().exists() or not sface_path().exists():
             return
-        engine = FaceEngine()
+        engine = FaceEngine(device="cpu")
         blank = np.zeros((720, 1280, 3), dtype=np.uint8)
         hits = engine.detect(blank, extract_features=True, max_side=DETECT_MAX_SIDE)
         self.assertEqual(hits, [])
@@ -125,3 +141,53 @@ class EngineTests(unittest.TestCase):
         source = inspect.getsource(FaceEngine.enroll_all)
         self.assertIn("extract_features=True", source)
         self.assertNotIn("max_side", source)
+
+    def test_stub_second_run_falls_back_to_cpu(self) -> None:
+        if not yunet_path().exists() or not sface_path().exists():
+            self.skipTest("models not downloaded")
+        from facehide.infer.session import OrtSessionFactory
+
+        runner = _BoomDml()
+        engine = FaceEngine(device="gpu", session_factory=OrtSessionFactory(runner))
+        blank = np.full((480, 640, 3), 40, dtype=np.uint8)
+        first = engine.detect(blank, extract_features=False)
+        self.assertEqual(first, [])
+        self.assertTrue(engine._live_det.uses_fixed_input)
+        self.assertTrue(engine._flag.dead)
+        self.assertEqual(runner.n, 2)
+        second = engine.detect(blank, extract_features=False)
+        self.assertEqual(second, [])
+        self.assertEqual(runner.n, 2)
+        self.assertFalse(engine._live_is_dml)
+        info = engine.backend_info()
+        self.assertTrue(info.fallback)
+        self.assertEqual(info.provider, "CPU")
+        third = engine.detect(blank, extract_features=False)
+        self.assertEqual(third, [])
+        self.assertEqual(runner.n, 2)
+        self.assertFalse(engine._live_is_dml)
+        self.assertEqual(engine.backend_info().provider, "CPU")
+        self.assertIsNotNone(engine.consume_fallback())
+
+    def test_reconfigure_gpu_retries_after_fallback(self) -> None:
+        if not yunet_path().exists() or not sface_path().exists():
+            self.skipTest("models not downloaded")
+        from facehide.infer.session import OrtSessionFactory
+
+        runner = _BoomDml()
+        engine = FaceEngine(device="gpu", session_factory=OrtSessionFactory(runner))
+        blank = np.full((480, 640, 3), 40, dtype=np.uint8)
+        engine.detect(blank, extract_features=False)
+        self.assertEqual(runner.n, 2)
+        self.assertTrue(engine._flag.dead)
+        engine.detect(blank, extract_features=False)
+        self.assertFalse(engine._live_is_dml)
+        engine.reconfigure("gpu")
+        after = engine.detect(blank, extract_features=False)
+        self.assertEqual(after, [])
+        self.assertGreater(runner.n, 2)
+        self.assertTrue(engine._live_is_dml)
+        self.assertTrue(engine._live_det.uses_fixed_input)
+        self.assertEqual(engine.backend_info().provider, "DmlExecutionProvider")
+        self.assertFalse(engine.backend_info().fallback)
+

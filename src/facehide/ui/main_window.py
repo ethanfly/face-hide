@@ -57,6 +57,7 @@ from facehide.config import (
     SettingsStore,
     WorkApp,
 )
+from facehide.infer.types import INFERENCE_DEVICES
 from facehide.engine import FaceEngine, NoFaceError
 from facehide.gallery import (
     Gallery,
@@ -187,6 +188,12 @@ def _render_preview(frame: PreviewFrame, *, hud: bool = True) -> QPixmap:
         painter.drawText(10, 20, t("preview.dev1", index=frame.camera_index, threshold=frame.threshold))
         painter.drawText(10, 38, t("preview.dev2", faces=len(frame.hits), score=nearest, streak=frame.streak))
         painter.drawText(10, 56, t("preview.dev3"))
+        if frame.backend or frame.infer_device:
+            painter.drawText(
+                10,
+                74,
+                t("preview.dev4", backend=frame.backend or "CPU", device=frame.infer_device or "CPU"),
+            )
     painter.end()
     return pixmap
 
@@ -1119,6 +1126,19 @@ class MainWindow(QMainWindow):
         cam_row.addWidget(self.camera_box, 1)
         form.addLayout(cam_row)
 
+        device_row = QHBoxLayout()
+        self.set_device_label = QLabel()
+        device_row.addWidget(self.set_device_label)
+        self.device_box = QComboBox()
+        for value in INFERENCE_DEVICES:
+            self.device_box.addItem(value, value)
+        self.device_box.currentIndexChanged.connect(self._save_from_ui)
+        device_row.addWidget(self.device_box, 1)
+        form.addLayout(device_row)
+        self.set_device_hint = QLabel()
+        self.set_device_hint.setWordWrap(True)
+        form.addWidget(self.set_device_hint)
+
         self.lbl_threshold = QLabel()
         self.threshold = QSlider(Qt.Orientation.Horizontal)
         self.threshold.setRange(25, 70)
@@ -1252,6 +1272,16 @@ class MainWindow(QMainWindow):
         self.set_eyebrow.setText(t("app.eyebrow"))
         self.set_title.setText(t("settings.title"))
         self.set_camera_label.setText(t("settings.camera"))
+        self.set_device_label.setText(t("settings.device"))
+        self.set_device_hint.setText(t("settings.device_hint"))
+        current = self.device_box.currentData()
+        self.device_box.blockSignals(True)
+        for index, value in enumerate(INFERENCE_DEVICES):
+            self.device_box.setItemText(index, t(f"settings.device_{value}"))
+        idx = self.device_box.findData(current)
+        if idx >= 0:
+            self.device_box.setCurrentIndex(idx)
+        self.device_box.blockSignals(False)
         self.chk_autolink.setText(t("settings.autolink"))
         self.chk_auto_enroll.setText(t("settings.auto_enroll"))
         self.chk_autostart.setText(t("settings.autostart"))
@@ -1284,6 +1314,8 @@ class MainWindow(QMainWindow):
         self._loading = True
         idx = self.camera_box.findData(settings.camera_index)
         self.camera_box.setCurrentIndex(idx if idx >= 0 else 0)
+        didx = self.device_box.findData(settings.inference_device)
+        self.device_box.setCurrentIndex(didx if didx >= 0 else 0)
         self.threshold.setValue(int(round(settings.match_threshold * 100)))
         self.confirm.setValue(settings.confirm_frames)
         self.cooldown.setValue(int(settings.cooldown_seconds))
@@ -1315,6 +1347,8 @@ class MainWindow(QMainWindow):
         settings = self.store.get()
         data = self.camera_box.currentData()
         settings.camera_index = int(data) if data is not None else 0
+        device = self.device_box.currentData()
+        settings.inference_device = str(device) if device else "auto"
         settings.match_threshold = self.threshold.value() / 100.0
         settings.confirm_frames = self.confirm.value()
         settings.cooldown_seconds = float(self.cooldown.value())

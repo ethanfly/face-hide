@@ -9,10 +9,17 @@ import cv2
 import numpy as np
 
 from facehide.gallery import MatchResult, Person, best_match
+from facehide.infer.opencv_backend import OpenCvSfaceRecognizer, OpenCvYunetDetector
+from facehide.infer.ort_backend import OrtSfaceRecognizer, OrtYunetDetector
+from facehide.infer.preprocess import CANVAS, fit_canvas, unpad_rows
+from facehide.infer.session import OrtSessionFactory, sface_model_path
+from facehide.infer.types import BackendInfo, Detection, DmlDeadFlag, normalize_device
 from facehide.models import ensure_models, sface_path, yunet_path
+from facehide.threads import apply as apply_threads
 
-# YuNet is created at 320×320; live ticks resize to this longest side.
-DETECT_MAX_SIDE = 320
+# Live OpenCV YuNet longest side. 640 keeps default 640×480 camera native
+# (matches enroll geometry). Larger frames still downscale.
+DETECT_MAX_SIDE = 640
 
 
 class NoFaceError(RuntimeError):
@@ -156,34 +163,141 @@ class FaceEngine:
         det_model: Path | None = None,
         rec_model: Path | None = None,
         detect_score: float = 0.7,
+        device: str = "auto",
+        session_factory: OrtSessionFactory | None = None,
+        adapter_enum=None,
     ) -> None:
         self._det_model = Path(det_model) if det_model else yunet_path()
         self._rec_model = Path(rec_model) if rec_model else sface_path()
         self.detect_score = detect_score
         self._lock = threading.Lock()
-        self._det: cv2.FaceDetectorYN | None = None
-        self._rec: cv2.FaceRecognizerSF | None = None
+        self._device = normalize_device(device)
+        self._factory = session_factory or OrtSessionFactory()
+        self._enum = adapter_enum
+        self._flag = DmlDeadFlag()
+        self._enroll_det: OpenCvYunetDetector | None = None
+        self._enroll_rec: OpenCvSfaceRecognizer | None = None
+        self._live_det = None
+        self._live_rec = None
+        self._live_is_dml = False
+        self._live_info: BackendInfo | None = None
+        self._fallback_logged = False
         self.extract_count = 0
 
     def ensure_ready(self) -> None:
         with self._lock:
-            self._ensure_unlocked()
+            self._ensure_unlocked(for_enroll=True)
 
-    def _ensure_unlocked(self) -> None:
-        if self._det is not None and self._rec is not None:
-            return
+    def backend_info(self) -> BackendInfo:
+        with self._lock:
+            if self._live_info is not None:
+                return self._live_info
+            return BackendInfo("opencv", "opencv", "CPU", "CPU", None, None, True)
+
+    def consume_fallback(self) -> str | None:
+        with self._lock:
+            if self._flag.dead and not self._fallback_logged:
+                self._fallback_logged = True
+                return self._flag.error or "DirectML"
+            return None
+
+    def reconfigure(self, device: str) -> BackendInfo:
+        with self._lock:
+            self._device = normalize_device(device)
+            if self._device in ("gpu", "auto"):
+                self._flag.clear()
+            self._live_det = None
+            self._live_rec = None
+            self._live_is_dml = False
+            self._live_info = None
+            self._fallback_logged = False
+            if self._live_info is None:
+                return BackendInfo("opencv", "opencv", "CPU", "CPU", None, None, True)
+            return self._live_info
+
+    def _ensure_unlocked(self, *, for_enroll: bool = False) -> None:
         if not self._det_model.exists() or not self._rec_model.exists():
             det, rec = ensure_models()
             self._det_model, self._rec_model = det, rec
-        self._det = cv2.FaceDetectorYN.create(
-            str(self._det_model),
-            "",
-            (320, 320),
-            float(self.detect_score),
-            0.3,
-            5000,
+        if self._enroll_det is None or self._enroll_rec is None:
+            self._enroll_det = OpenCvYunetDetector(self._det_model, self.detect_score)
+            self._enroll_rec = OpenCvSfaceRecognizer(self._rec_model)
+        if for_enroll:
+            return
+        if self._flag.dead:
+            self._cpu_live()
+            return
+        if self._live_det is not None and self._live_rec is not None:
+            return
+        self._build_live()
+
+    def _cpu_live(self) -> None:
+        assert self._enroll_det is not None and self._enroll_rec is not None
+        self._live_det = self._enroll_det
+        self._live_rec = self._enroll_rec
+        self._live_is_dml = False
+        self._live_info = BackendInfo("opencv", "opencv", "CPU", "CPU", None, None, True)
+        apply_threads(dml_active=False)
+
+    def _build_live(self) -> None:
+        if self._device == "cpu" and not self._factory.is_stub():
+            self._cpu_live()
+            return
+        try:
+            self._try_dml()
+        except Exception as exc:
+            self._flag.trip(str(exc))
+            self._cpu_live()
+
+    def _attach_dml(self, yunet_fn, sface_fn, info: BackendInfo) -> None:
+        assert self._enroll_rec is not None
+        y_in = getattr(yunet_fn, "input_name", None) or "input"
+        s_in = getattr(sface_fn, "input_name", None) or "data"
+        yunet_fn.run(None, {y_in: np.zeros((1, 3, 640, 640), dtype=np.float32)})
+        sface_fn.run(None, {s_in: np.zeros((1, 3, 112, 112), dtype=np.float32)})
+        self._live_det = OrtYunetDetector(yunet_fn, flag=self._flag, info=info)
+        self._live_rec = OrtSfaceRecognizer(
+            sface_fn, aligner=self._enroll_rec, flag=self._flag, info=info
         )
-        self._rec = cv2.FaceRecognizerSF.create(str(self._rec_model), "")
+        self._live_info = info
+        self._live_is_dml = True
+        apply_threads(dml_active=True)
+
+    def _try_dml(self) -> None:
+        from facehide.infer.device import plan_live_device
+
+        assert self._enroll_rec is not None
+        if self._factory.is_stub():
+            yunet_fn = self._factory.make(self._det_model, [])
+            sface_fn = self._factory.make(self._rec_model, [])
+            info = BackendInfo("yunet", "sface", "DmlExecutionProvider", "stub", 1, None, False)
+            self._attach_dml(yunet_fn, sface_fn, info)
+            return
+        plan = plan_live_device(self._device, enum_fn=self._enum)
+        if not plan.use_dml:
+            self._cpu_live()
+            return
+        ids = plan.probe_ids or ((plan.dxgi_index,) if plan.dxgi_index is not None else ())
+        last_error: Exception | None = None
+        for device_id in ids:
+            try:
+                providers = self._factory.providers_for(int(device_id))
+                yunet_fn = self._factory.make(self._det_model, providers)
+                sface_fn = self._factory.make(sface_model_path(self._rec_model), providers)
+                info = BackendInfo(
+                    "yunet",
+                    "sface",
+                    "DmlExecutionProvider",
+                    plan.adapter_name or f"dxgi:{device_id}",
+                    int(device_id),
+                    plan.dedicated_bytes,
+                    False,
+                )
+                self._attach_dml(yunet_fn, sface_fn, info)
+                return
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(str(last_error or "DirectML unavailable"))
 
     def detect(
         self,
@@ -191,25 +305,50 @@ class FaceEngine:
         extract_features: bool = True,
         *,
         max_side: int = 0,
+        for_enroll: bool = False,
     ) -> list[FaceHit]:
         if bgr is None or bgr.size == 0:
             return []
         with self._lock:
-            self._ensure_unlocked()
-            assert self._det is not None and self._rec is not None
-            self._det.setScoreThreshold(float(self.detect_score))
-            work, scale_x, scale_y = working_view(bgr, max_side)
-            height, width = work.shape[:2]
-            self._det.setInputSize((width, height))
-            _retval, faces = self._det.detect(work)
-            rec = self._rec
+            self._ensure_unlocked(for_enroll=for_enroll)
+            det = self._enroll_det if for_enroll else self._live_det
+            rec = self._enroll_rec if for_enroll else self._live_rec
+            assert det is not None and rec is not None
+            side = 0 if (for_enroll or det.uses_fixed_input) else max_side
+            work, scale_x, scale_y = working_view(bgr, side)
+            pad_enroll = (
+                for_enroll
+                and not det.uses_fixed_input
+                and max(work.shape[0], work.shape[1]) <= CANVAS
+            )
+            if pad_enroll:
+                canvas, pad_scale = fit_canvas(work)
+                detections = det.detect(canvas, float(self.detect_score))
+                if detections:
+                    rows = unpad_rows(
+                        np.stack([item.raw for item in detections]).astype(np.float32),
+                        pad_scale,
+                    )
+                    detections = [
+                        Detection(
+                            box=(float(row[0]), float(row[1]), float(row[2]), float(row[3])),
+                            score=float(row[14]),
+                            raw=row,
+                        )
+                        for row in rows
+                    ]
+            else:
+                detections = det.detect(work, float(self.detect_score))
+            if not detections:
+                faces = None
+            else:
+                faces = np.stack([item.raw for item in detections]).astype(np.float32)
             src = bgr
             engine = self
 
             def feature_fn(raw: np.ndarray) -> np.ndarray:
                 engine.extract_count += 1
-                aligned = rec.alignCrop(src, raw)
-                return np.asarray(rec.feature(aligned), dtype=np.float32).reshape(-1)
+                return rec.embed(src, raw)
 
             return hits_from_detections(
                 faces,
@@ -242,7 +381,7 @@ class FaceEngine:
         return faces[0]
 
     def enroll_all(self, bgr: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
-        hits = self.detect(bgr, extract_features=True)
+        hits = self.detect(bgr, extract_features=True, for_enroll=True)
         if not hits:
             raise NoFaceError("未检测到人脸，请换一张正脸清晰、光线充足的照片")
         out: list[tuple[np.ndarray, np.ndarray]] = []

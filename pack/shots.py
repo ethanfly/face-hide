@@ -98,7 +98,7 @@ def capture() -> None:
     settings.break_fullscreen = True
     store.replace(settings)
     gallery = Gallery(tmp / "gallery.json", tmp / "gallery")
-    window = MainWindow(store, gallery, FaceEngine())
+    window = MainWindow(store, gallery, FaceEngine(device="cpu"))
     window.setWindowTitle(t("app.name"))
     window.resize(1180, 760)
     window.show()
@@ -109,7 +109,8 @@ def capture() -> None:
         ("faces", 1),
         ("work", 2),
         ("hide", 3),
-        ("settings", 4),
+        ("notify", 4),
+        ("settings", 5),
     )
 
     def shoot() -> None:

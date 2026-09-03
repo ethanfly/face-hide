@@ -51,6 +51,8 @@ cd /d E:\workspace\face-hide
 python -m pip install -e .
 ```
 
+若环境里已经装过 CPU 版 `onnxruntime`，先卸载再装本项目，以免盖掉 Windows 上的 DirectML GPU 包：`python -m pip uninstall onnxruntime`。
+
 首次启动会自动下载 OpenCV Zoo 的 YuNet（检测）和 SFace（特征）模型。
 本机若有虚拟摄像头（占位 Logo），启动时会自动改用真实镜头。仍不对就到「识别设置」里换摄像头编号。
 

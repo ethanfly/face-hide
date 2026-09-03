@@ -4,6 +4,9 @@ import traceback
 
 
 def _main() -> int:
+    from facehide.threads import apply_env
+
+    apply_env()
     from facehide.ui.app import main
 
     return main()

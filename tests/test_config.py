@@ -110,6 +110,18 @@ class ConfigTests(unittest.TestCase):
             save_settings(Settings(language="en"), path)
             self.assertEqual(load_settings(path).language, "en")
 
+    def test_inference_device_default_and_coerce(self) -> None:
+        self.assertEqual(settings_from_dict({}).inference_device, "auto")
+        self.assertEqual(settings_from_dict({"inference_device": "gpu"}).inference_device, "gpu")
+        self.assertEqual(settings_from_dict({"inference_device": "cpu"}).inference_device, "cpu")
+        self.assertEqual(settings_from_dict({"inference_device": "nope"}).inference_device, "auto")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_settings(Settings(inference_device="gpu"), path)
+            self.assertEqual(load_settings(path).inference_device, "gpu")
+            store = SettingsStore(path)
+            self.assertEqual(store.loop_settings().inference_device, "gpu")
+
     def test_notify_template_defaults_and_roundtrip(self) -> None:
         self.assertEqual(settings_from_dict({}).notify_template, "classic")
         self.assertEqual(settings_from_dict({}).notify_name_mode, "full")

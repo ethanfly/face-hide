@@ -5,3 +5,4 @@ pywin32>=306
 psutil>=5.9
 PySide6>=6.6
 openpyxl>=3.1
+onnxruntime-directml>=1.22,<1.25; platform_system=="Windows" and python_version>="3.11"

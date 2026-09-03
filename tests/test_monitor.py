@@ -174,7 +174,7 @@ class TickHelperTests(unittest.TestCase):
         src_w, src_h = 1280, 720
         self.assertLess(plan.detect_max_side * plan.detect_max_side, src_w * src_h)
         self.assertEqual(plan.detect_max_side, DETECT_MAX_SIDE)
-        self.assertLessEqual(plan.detect_max_side, 320)
+        self.assertLessEqual(plan.detect_max_side, 640)
 
     def test_run_loop_calls_shipped_tick_helpers(self) -> None:
         source = inspect.getsource(MonitorThread.run)
@@ -189,6 +189,7 @@ class TickHelperTests(unittest.TestCase):
         self.assertIn("match_threshold", source)
         self.assertIn("confirm_frames", source)
         self.assertIn("auto_enroll_unknown", source)
+        self.assertIn("inference_device", source)
         self.assertIn("dev_mode", source)
         self.assertIn("cooldown_seconds", source)
         self.assertIn("perform_switch", source)
@@ -236,6 +237,18 @@ class PreviewUiTests(unittest.TestCase):
         self.assertIn("_update_pills", on_frame)
         self.assertIn("add_preview_extra", inspect.getsource(CaptureDialog.__init__))
         self.assertIn("remove_preview_extra", inspect.getsource(CaptureDialog.done))
+
+    def test_settings_persist_inference_device(self) -> None:
+        from facehide.ui.main_window import MainWindow
+
+        collect = inspect.getsource(MainWindow._collect_settings)
+        reload_all = inspect.getsource(MainWindow.reload_all)
+        apply_lang = inspect.getsource(MainWindow._apply_language)
+        self.assertIn("inference_device", collect)
+        self.assertIn("inference_device", reload_all)
+        self.assertIn("settings.device", apply_lang)
+        self.assertIn("device_box", inspect.getsource(MainWindow._build_settings))
+
 
 
 if __name__ == "__main__":

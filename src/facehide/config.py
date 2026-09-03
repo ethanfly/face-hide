@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from facehide.i18n import normalize_language
+from facehide.infer.types import normalize_device
 from facehide.paths import config_path
 
 
@@ -69,6 +70,7 @@ class Settings:
     dev_mode: bool = False
     auto_link_same_person: bool = True
     auto_enroll_unknown: bool = True
+    inference_device: str = "auto"
     language: str = "zh"
     notify_template: str = "classic"
     notify_name_mode: str = "full"
@@ -91,6 +93,7 @@ class LoopSettings:
     cooldown_seconds: float
     auto_enroll_unknown: bool
     dev_mode: bool
+    inference_device: str
 
 
 def _pairs_from(raw: Any) -> list[KvPair]:
@@ -191,6 +194,7 @@ def settings_from_dict(data: dict[str, Any]) -> Settings:
         dev_mode=bool(data.get("dev_mode", False)),
         auto_link_same_person=bool(data.get("auto_link_same_person", True)),
         auto_enroll_unknown=bool(data.get("auto_enroll_unknown", True)),
+        inference_device=normalize_device(data.get("inference_device", "auto")),
         language=normalize_language(data.get("language", "zh")),
         notify_template=template,
         notify_name_mode=name_mode,
@@ -249,6 +253,7 @@ class SettingsStore:
                 cooldown_seconds=s.cooldown_seconds,
                 auto_enroll_unknown=s.auto_enroll_unknown,
                 dev_mode=s.dev_mode,
+                inference_device=s.inference_device,
             )
 
     def replace(self, settings: Settings) -> Settings:

@@ -36,6 +36,16 @@ def _run(args: list[str]) -> None:
     subprocess.check_call(args, cwd=str(ROOT))
 
 
+def ensure_directml() -> None:
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise SystemExit("packed GPU build requires onnxruntime-directml") from exc
+    providers = ort.get_available_providers()
+    if "DmlExecutionProvider" not in providers:
+        raise SystemExit(f"DmlExecutionProvider missing: {providers}")
+
+
 def ensure_pyinstaller() -> None:
     try:
         import PyInstaller  # noqa: F401
@@ -99,7 +109,7 @@ def keep(item):
     return not any(token in text for token in SKIP)
 
 datas, binaries, hiddenimports = [], [], []
-for package in ("PySide6", "cv2", "numpy"):
+for package in ("PySide6", "cv2", "numpy", "onnxruntime"):
     collected_datas, collected_binaries, collected_hidden = collect_all(package)
     datas += [item for item in collected_datas if keep(item)]
     binaries += [item for item in collected_binaries if keep(item)]
@@ -129,6 +139,13 @@ hiddenimports += [
     "facehide.notify",
     "facehide.startup",
     "facehide.ui.channels",
+    "facehide.threads",
+    "facehide.infer",
+    "facehide.infer.session",
+    "facehide.infer.device",
+    "facehide.infer.ort_backend",
+    "onnxruntime",
+    "onnxruntime.capi",
     "openpyxl",
 ]
 
@@ -193,6 +210,7 @@ def write_readme(dist: Path, version: str) -> None:
 
 关闭或最小化会缩到托盘，托盘图标右键可退出。同时只运行一个实例。
 识别到已登记人脸时会写入窗口日志。
+识别设置可选择自动 / GPU / CPU。有独显时默认用 DirectML 加速。
 
 可选参数：
   FaceHide.exe --dev        开发模式，命中只演练
@@ -296,12 +314,18 @@ def main() -> int:
     models = prepare_models()
     if len(models) < len(MODEL_NAMES):
         raise SystemExit("face models missing; pack cannot continue")
+    ensure_directml()
     ensure_pyinstaller()
     write_icon()
     write_spec(models)
     _run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(SPEC)])
     if not DIST.is_dir():
         raise SystemExit(f"未生成目录：{DIST}")
+    internal = DIST / "_internal"
+    dml_ok = any(internal.rglob("DirectML.dll")) if internal.is_dir() else False
+    dml_ep = any(internal.rglob("onnxruntime_providers_dml*")) if internal.is_dir() else False
+    if not dml_ok or not dml_ep:
+        raise SystemExit("packed build missing DirectML.dll or onnxruntime_providers_dml")
     copy_models(DIST, models)
     write_readme(DIST, version)
     exe = DIST / "FaceHide.exe"

@@ -14,6 +14,7 @@ from facehide.config import SettingsStore
 from facehide.engine import DETECT_MAX_SIDE, FaceEngine, FaceHit, NoFaceError, crop_face
 from facehide.gallery import Gallery, Person, best_match, can_trigger, cosine_similarity
 from facehide.i18n import t
+from facehide.infer.device import coinitialize_mta, couninitialize
 
 VISIBLE_TICK_MS = 50
 HIDDEN_TICK_MS = 200
@@ -86,6 +87,8 @@ class PreviewFrame:
     dev_mode: bool = False
     matched_armed: bool = False
     seen: list[SeenFace] = field(default_factory=list)
+    backend: str = ""
+    infer_device: str = ""
 
 
 def track_seen(
@@ -210,10 +213,21 @@ class MonitorThread(QThread):
         last = time.perf_counter()
         fps = 0.0
         recent_unknown: list[tuple[float, np.ndarray]] = []
+        opened_device = None
+        infer_announced = False
+        com_ok = coinitialize_mta()
         try:
             while not self._stop:
                 loop = self._store.loop_settings()
                 plan = plan_tick(self._preview_needed, self._preview_extra)
+                if opened_device is not None and opened_device != loop.inference_device:
+                    self._engine.reconfigure(loop.inference_device)
+                    opened_device = loop.inference_device
+                    streak = 0
+                    infer_announced = False
+                    self.msleep(remaining_sleep_ms(plan.sleep_ms, 0.0))
+                    continue
+                opened_device = loop.inference_device
                 need_reopen = (
                     cap is None
                     or not cap.isOpened()
@@ -264,6 +278,16 @@ class MonitorThread(QThread):
                     max_side=plan.detect_max_side,
                     extract_features=extract_features,
                 )
+                fallback = self._engine.consume_fallback()
+                if fallback:
+                    self.status.emit(t("log.infer_fallback", error=fallback))
+                info = self._engine.backend_info()
+                if not infer_announced:
+                    infer_announced = True
+                    key = "log.infer_cpu" if info.fallback else "log.infer_gpu"
+                    self.status.emit(
+                        t(key, backend=info.provider, device=info.device_name or "CPU")
+                    )
                 recognized = [
                     hit
                     for hit in hits
@@ -368,10 +392,14 @@ class MonitorThread(QThread):
                         dev_mode=loop.dev_mode,
                         matched_armed=bool(triggerable),
                         seen=seen,
+                        backend=info.provider,
+                        infer_device=info.device_name,
                     )
                 )
                 self.msleep(remaining_sleep_ms(plan.sleep_ms, time.perf_counter() - tick_started))
         finally:
             if cap is not None:
                 cap.release()
+            if com_ok:
+                couninitialize()
             self.status.emit(t("log.cam_closed"))
