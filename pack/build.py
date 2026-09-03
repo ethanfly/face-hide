@@ -94,6 +94,7 @@ def write_spec(models: list[Path]) -> Path:
     data_items = [(str(check_png), "facehide/ui")]
     data_items.extend((str(path), "models") for path in models)
     spec = f"""# -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 SKIP = (
@@ -109,11 +110,19 @@ def keep(item):
     return not any(token in text for token in SKIP)
 
 datas, binaries, hiddenimports = [], [], []
-for package in ("PySide6", "cv2", "numpy", "onnxruntime"):
+for package in ("PySide6", "cv2", "numpy"):
     collected_datas, collected_binaries, collected_hidden = collect_all(package)
     datas += [item for item in collected_datas if keep(item)]
     binaries += [item for item in collected_binaries if keep(item)]
     hiddenimports += [item for item in collected_hidden if keep(item)]
+try:
+    import onnxruntime
+    capi = Path(onnxruntime.__file__).resolve().parent / "capi"
+    for item in capi.glob("*"):
+        if item.suffix.lower() in {{".dll", ".pyd"}}:
+            binaries.append((str(item), "onnxruntime/capi"))
+except Exception:
+    pass
 try:
     binaries += collect_dynamic_libs("pywin32")
 except Exception:
@@ -158,7 +167,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "IPython", "pytest"],
+    excludes=["tkinter", "matplotlib", "IPython", "pytest", "torch", "torchvision", "torchaudio"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -322,10 +331,9 @@ def main() -> int:
     if not DIST.is_dir():
         raise SystemExit(f"未生成目录：{DIST}")
     internal = DIST / "_internal"
-    dml_ok = any(internal.rglob("DirectML.dll")) if internal.is_dir() else False
-    dml_ep = any(internal.rglob("onnxruntime_providers_dml*")) if internal.is_dir() else False
-    if not dml_ok or not dml_ep:
-        raise SystemExit("packed build missing DirectML.dll or onnxruntime_providers_dml")
+    dml_ok = internal.is_dir() and any(internal.rglob("DirectML.dll"))
+    if not dml_ok:
+        raise SystemExit("packed build missing DirectML.dll")
     copy_models(DIST, models)
     write_readme(DIST, version)
     exe = DIST / "FaceHide.exe"
